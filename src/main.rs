@@ -75,7 +75,7 @@ impl LoadedChunks {
 		let local_y = y % 64;
 		for &chunk in self.chunks.iter() {
 			if let Ok(checking) = chunk_ids.get(chunk) {
-				if chunk_x == checking.relative_x && chunk_y == checking.relative_y {
+				if (chunk_x == checking.relative_x) && (chunk_y == checking.relative_y) {
 					return checking.at(local_x, local_y);
 				}
 			}
@@ -90,7 +90,7 @@ impl LoadedChunks {
 		let local_y = y % 64;
 		for &chunk in self.chunks.iter() {
 			if let Ok(mut checking) = chunk_ids.get_mut(chunk) {
-				if chunk_x == checking.relative_x && chunk_y == checking.relative_y {
+				if (chunk_x == checking.relative_x) && (chunk_y == checking.relative_y) {
 					return checking.replace_at(replace_with, local_x, local_y);
 				}
 			}
@@ -131,7 +131,7 @@ impl Chunk {
 	}
 
 	fn at(&self, x: i64, y: i64) -> Option<Entity> {
-		if x >= Chunk::WIDTH || y >= Chunk::HEIGHT || x < 0 || y < 0{
+		if x >= Chunk::WIDTH || y >= Chunk::HEIGHT || x < 0 || y < 0 {
 			None
 		} else {
 			Some(self.tiles[(x + y * Chunk::WIDTH as i64) as usize])
@@ -230,8 +230,8 @@ fn update_block(
 					if let Ok((tile, mut transfem, mut sprite)) = blocks.get_mut(tile) {
 						if let Ok(loc) = player.get_single() {
 							transfem.translation = Vec3::new(
-								((-chunk.relative_x * 64 + x) as f32 - loc.x) * 8.0,
-								((-chunk.relative_y * 64 + y) as f32 - loc.y) * 8.0 - 16.0,
+								((chunk.relative_x * 64 + x) as f32 - loc.x) * 8.0,
+								((chunk.relative_y * 64 + y) as f32 - loc.y) * 8.0 - 16.0,
 								BLOCK_LAYER
 							);
 						}
@@ -265,6 +265,7 @@ fn move_player(
 
 fn do_momentum(
 	time: Res<Time>,
+	loaded_chunks: Query<&LoadedChunks>,
 	check_collision: Query<&Chunk>,
 	tiles: Query<&Tile>,
 	mut query: Query<(
@@ -279,8 +280,8 @@ fn do_momentum(
 	for (mut loc, mut momentum, mut move_state) in &mut query {
 		momentum.y -= time.delta_seconds() * 9.81;
 		move_state.touching_grass = false;
-		for tocheck in &check_collision {
-			if let Some(checking) = tocheck.at(loc.x.round() as i64 + tocheck.relative_x * 64, loc.y.round() as i64 + tocheck.relative_y * 64) {
+		if let Ok(loaded) = loaded_chunks.get_single() {
+			if let Some(checking) = loaded.at(&check_collision, loc.x.round() as i64, loc.y.round() as i64) {
 				if let Ok(tile_check) = tiles.get(checking) {
 					if tile_check.smooths {
 						if momentum.y <= 0.0 {
@@ -840,13 +841,13 @@ fn setup (
 	let chunk0 = commands.spawn(
 		Chunk::new(
 			chunk_data0,
-			0, 0
+			-1, 0
 		)
 	).id();
 	let chunk1 = commands.spawn(
 		Chunk::new(
 			chunk_data1,
-			-1, 0
+			0, 0
 		)
 	).id();
 	let chunk2 = commands.spawn(
