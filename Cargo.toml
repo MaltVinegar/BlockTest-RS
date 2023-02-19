@@ -1,0 +1,16 @@
+[package]
+name = "bevy-test"
+version = "0.1.0"
+edition = "2021"
+linker = "/usr/bin/clang"
+rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[dependencies]
+bevy = {version = "0.9.x", features = ["dynamic"]}
+bevy_pixel_camera = { git = "https://github.com/drakmaniso/bevy_pixel_camera" }
