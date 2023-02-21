@@ -6,7 +6,7 @@ use bevy:: {
 	diagnostic::{
 		Diagnostics,
 		FrameTimeDiagnosticsPlugin
-	}, reflect::erased_serde::__private::serde::__private::de, input::mouse
+	},
 };
 use bevy_pixel_camera::*;
 use std::collections::HashMap;
