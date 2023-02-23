@@ -1,5 +1,5 @@
 
-#![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
+//#![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
 
 use bevy:: {
 	prelude::*,
@@ -11,6 +11,7 @@ use bevy:: {
 use bevy_pixel_camera::*;
 use std::collections::HashMap;
 
+#[allow(unused)]
 const BACKGROUND_LAYER: f32 = 0.0;
 const BLOCK_LAYER: f32 = 1.0;
 const MOB_LAYER: f32 = 2.0;
@@ -24,16 +25,16 @@ fn main() {
 		.add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
 		.add_plugin(FrameTimeDiagnosticsPlugin::default())
 		.add_plugin(PixelCameraPlugin)
-		.add_plugin(PixelBorderPlugin {color: Color::rgb(0.1, 0.1, 0.1),})
 
 		.add_startup_system(setup)
 		.add_startup_system_to_stage(POSTSTARTUP, init_blocks)
 
 		.add_system(fps_update_system)
-		.add_system(update_blocks)
+//		.add_system(update_blocks)
 		.add_system(player_input)
 		.add_system(do_physics)
 		.add_system(walk_animation)
+		.add_system(update_camera)
 	.run();
 }
 
@@ -102,16 +103,6 @@ impl<'a> Default for Mob {
 	}
 }
 
-impl Mob {
-	fn block_position(&self) -> (usize, usize) {
-		(self.position.x.trunc() as usize, self.position.y.trunc() as usize)
-	}
-}
-
-fn vec2_to_loc(loc: Vec2) -> (usize, usize) {
-	(loc.x.trunc() as usize, loc.y.trunc() as usize)
-}
-
 #[derive(Component, Default)]
 struct Player;
 
@@ -137,6 +128,7 @@ struct PlayerAnimationTimer(Timer);
 
 #[derive(Component, Copy, Clone)]
 struct Tile {
+	#[allow(unused)]
 	id: usize,
 	smooths: bool,
 }
@@ -208,10 +200,12 @@ impl Chunk {
 		}
 	}
 
+	#[allow(unused)]
 	fn serialize(&self) {
 		todo!();
 	}
 
+	#[allow(unused)]
 	fn deserialize() -> Self {
 		todo!();
 	}
@@ -307,25 +301,16 @@ fn find_tile(search_through: &Query<&Chunk>, to_find: Entity) -> Option<(usize, 
 	None
 }
 
-fn update_blocks(
-	chunks: Query<&Chunk>,
-	check: Query<&Tile>,
-	player: Query<&Mob, With<Player>>,
-	mut tiles: Query<(Entity, &Tile, &mut Transform)>,
+fn update_camera (
+	mut cam: Query<&mut Transform, (With<Camera>, Without<Player>)>,
+	mut player: Query<(&Mob, &mut Transform), With<Player>>,
 ) {
-	for (entity, block, mut transfem) in &mut tiles {
-		if block.smooths {
-			if let Some((current_x, current_y)) = find_tile(&chunks, entity) {
-				if let Ok(player_loc) = player.get_single() {
-					if let Some((relative_x, relative_y)) = find_tile(&chunks, entity) {
-						transfem.translation = Vec3::new(
-							(relative_x as f32 - player_loc.position.x) * 8.0,
-							(relative_y as f32 - player_loc.position.y) * 8.0 - 12.0,
-							BLOCK_LAYER
-						);
-					}
-				}
-			}
+	if let Ok(mut transfem) = cam.get_single_mut() {
+		if let Ok((mob, mut player_transfem)) = player.get_single_mut() {
+			player_transfem.translation.x = mob.position.x * 8.0;
+			player_transfem.translation.y = mob.position.y * 8.0;
+			transfem.translation.x = mob.position.x * 8.0;
+			transfem.translation.y = mob.position.y * 8.0;
 		}
 	}
 }
@@ -334,7 +319,6 @@ fn player_input (
 	mut commands: Commands,
 	keys: Res<Input<KeyCode>>,
 	mouse_keys: Res<Input<MouseButton>>,
-	time: Res<Time>,
 	block_ids: Res<BlockId>,
 	windows: Res<Windows>,
 	pixel_projection: Query<&PixelProjection>,
@@ -354,6 +338,21 @@ fn player_input (
 			mob.walk_state = WalkState::TryRight;
 		}
 
+		/*if let Ok(mut transfem) = cam.get_single_mut() {
+			if keys.just_pressed(KeyCode::Up) {
+				transfem.translation.y += 8.0;
+			}
+			if keys.pressed(KeyCode::Right) {
+				transfem.translation.x += 1.0;
+			}
+			if keys.pressed(KeyCode::Down) {
+				transfem.translation.y -= 1.0;
+			}
+			if keys.pressed(KeyCode::Left) {
+				transfem.translation.x -= 1.0;
+			}
+		}*/
+
 		let window = windows.get_primary().unwrap();
 
 		if mouse_keys.any_just_pressed([MouseButton::Left, MouseButton::Right]) {
@@ -370,38 +369,38 @@ fn player_input (
 						let clicked_block_x: usize = (mob.position.x + (real_mouse_x / 8.0)).round() as usize;
 						let clicked_block_y: usize = (mob.position.y + (real_mouse_y + 12.0) / 8.0).round() as usize;
 
-						let (handle, tile) = if mouse_keys.just_pressed(MouseButton::Left) {
-							block_ids.by_id(1)
-						} else {
-							block_ids.by_id(0)
+						let (handle, tile) = match mouse_keys.just_pressed(MouseButton::Left) {
+							true => block_ids.by_id(1),
+							false => block_ids.by_id(0),
 						};
 
 						let new_block = commands.spawn((
 							tile.clone(),
 						)).id();
 
-						if let Some((to_despawn, sides_smoothed)) = set_tile_at(&mut chunks, &mut blocks, tile.smooths, new_block, clicked_block_x, clicked_block_y) {
-							commands.entity(to_despawn).despawn();
+						match set_tile_at(&mut chunks, &mut blocks, tile.smooths, new_block, clicked_block_x, clicked_block_y) {
+							Some((to_despawn, sides_smoothed)) => {
+								commands.entity(to_despawn).despawn();
 
-							commands.entity(new_block).insert( SpriteSheetBundle {
-								texture_atlas: handle.clone(),
-								transform: Transform {
-									translation: Vec3::new(
-										(clicked_block_x as f32 - mob.position.x) * 8.0,
-										(clicked_block_y as f32 - mob.position.y) * 8.0 - 12.0,
-										BLOCK_LAYER
-									),
+								commands.entity(new_block).insert( SpriteSheetBundle {
+									texture_atlas: handle.clone(),
+									transform: Transform {
+										translation: Vec3::new(
+											clicked_block_x as f32 * 8.0,
+											clicked_block_y as f32 * 8.0 - 12.0,
+											BLOCK_LAYER
+										),
+										..default()
+									},
+									sprite: TextureAtlasSprite {
+										index: sides_smoothed,
+										..default()
+									},
 									..default()
-								},
-								sprite: TextureAtlasSprite {
-									index: sides_smoothed,
-									..default()
-								},
-								..default()
-							});
-						} else {
-							commands.entity(new_block).despawn();
-						}
+								});
+							},
+							None => commands.entity(new_block).despawn()
+						};
 					}
 				}
 			}
@@ -437,17 +436,9 @@ fn do_physics(
 
 		for y in 0..=mob.size.y.trunc() as usize {
 			for x in 0..=mob.size.x.trunc() as usize {
-				let checking_x = x + new_loc.x.trunc() as usize;
 				let checking_y = y + new_loc.y.trunc() as usize;
+				let checking_x = x + new_loc.x.trunc() as usize;
 
-				if let Some(tile_colliding) = tile_at(&chunks, checking_x, mob.position.y.trunc() as usize + y) {
-					if let Ok(tile) = blocks.get(tile_colliding) {
-						if tile.smooths {
-							new_velocity.x = 0.0;
-							new_loc.x = mob.position.x;
-						}
-					}
-				}
 				if let Some(tile_colliding) = tile_at(&chunks, mob.position.x.trunc() as usize + x, checking_y) {
 					if let Ok(tile) = blocks.get(tile_colliding) {
 						if tile.smooths {
@@ -455,6 +446,20 @@ fn do_physics(
 							new_loc.y = mob.position.y.trunc();
 							new_velocity.x -= new_velocity.x * 10.0 * time.delta_seconds();
 							mob.touching_grass = true;
+						}
+					}
+				} if let Some(tile_colliding) = tile_at(&chunks, checking_x, mob.position.y.trunc() as usize + y) {
+					if let Ok(tile) = blocks.get(tile_colliding) {
+						if tile.smooths {
+							new_velocity.x = 0.0;
+							new_loc.x = mob.position.x;
+						}
+					}
+				} else if let Some(tile_colliding) = tile_at(&chunks, checking_x, checking_y) {
+					if let Ok(tile) = blocks.get(tile_colliding) {
+						if tile.smooths {
+							new_velocity.x = 0.0;
+							new_loc.x = mob.position.x;
 						}
 					}
 				}
@@ -500,6 +505,7 @@ fn walk_animation(
 }
 
 fn fps_update_system(
+	#[allow(unused)]
 	diagnostics: Res<Diagnostics>,
 	player_query: Query<&Mob, With<Player>>,
 	mut query: Query<
@@ -694,9 +700,6 @@ fn setup (
 		)
 	);
 
-	let camera = 
-		commands.spawn(PixelCameraBundle::from_resolution(320, 240)).id();
-
 	commands.spawn((
 		Player {},
 		Mob {
@@ -723,7 +726,7 @@ fn setup (
 		core::array::from_fn(
 			|y| -> [Entity; Chunk::WIDTH] {
 				core::array::from_fn(
-					|x| -> Entity {
+					|_| -> Entity {
 						match y {
 							0..=9 =>
 								commands.spawn((
@@ -781,7 +784,7 @@ fn setup (
 		core::array::from_fn(
 			|y| -> [Entity; Chunk::WIDTH] {
 				core::array::from_fn(
-					|x| -> Entity {
+					|_| -> Entity {
 						match y {
 							0..=8 =>
 								commands.spawn((
@@ -839,7 +842,7 @@ fn setup (
 		core::array::from_fn(
 			|y| -> [Entity; Chunk::WIDTH] {
 				core::array::from_fn(
-					|x| -> Entity {
+					|_| -> Entity {
 						match y {
 							0..=10 =>
 								commands.spawn((
@@ -894,7 +897,7 @@ fn setup (
 		);
 
 	let chunk_data3: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
 			core::array::from_fn( |x| -> Entity {
 				match x {
 					0..=Chunk::HEIGHT =>
@@ -915,7 +918,7 @@ fn setup (
 					_ => panic!(),
 	}})});
 	let chunk_data4: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
 			core::array::from_fn( |x| -> Entity {
 				match x {
 					0..=Chunk::HEIGHT =>
@@ -936,7 +939,7 @@ fn setup (
 					_ => panic!(),
 	}})});
 	let chunk_data5: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
 			core::array::from_fn( |x| -> Entity {
 				match x {
 					0..=Chunk::HEIGHT =>
@@ -957,7 +960,7 @@ fn setup (
 					_ => panic!(),
 	}})});
 	let chunk_data6: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
 			core::array::from_fn( |x| -> Entity {
 				match x {
 					0..=Chunk::HEIGHT =>
@@ -978,7 +981,7 @@ fn setup (
 					_ => panic!(),
 	}})});
 	let chunk_data7: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
 			core::array::from_fn( |x| -> Entity {
 				match x {
 					0..=Chunk::HEIGHT =>
@@ -999,7 +1002,7 @@ fn setup (
 					_ => panic!(),
 	}})});
 	let chunk_data8: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
 			core::array::from_fn( |x| -> Entity {
 				match x {
 					0..=Chunk::HEIGHT =>
@@ -1075,49 +1078,62 @@ fn setup (
 		)
 	);
 
-//	commands.spawn(PixelCameraBundle::from_resolution(320, 240));
+	commands.spawn(PixelCameraBundle::from_resolution(320, 240));
 }
 
 fn init_blocks(
 	chunks: Query<&Chunk>,
 	check: Query<&Tile>,
-	player: Query<&Mob, With<Player>>,
-	mut tiles: Query<(Entity, &Tile, &mut TextureAtlasSprite)>,
+	mut tiles: Query<(Entity, &Tile, &mut TextureAtlasSprite, &mut Transform)>,
 ) {
-	for (entity, block, mut sprite) in &mut tiles {
-		if block.smooths {
-			if let Some((current_x, current_y)) = find_tile(&chunks, entity) {
-				let mut smoothing_flags: usize = 0;
-				if let Some(checking) = tile_at(&chunks, current_x, current_y + 1) {
-					if let Ok(unwrapped) = check.get(checking) {
-						if unwrapped.smooths {
-							smoothing_flags |= 1;
-						}
-					}
-				}
-				if let Some(checking) = tile_at(&chunks, current_x, current_y - 1) {
-					if let Ok(unwrapped) = check.get(checking) {
-						if unwrapped.smooths {
-							smoothing_flags |= 2;
-						}
-					}
-				}
-				if let Some(checking) = tile_at(&chunks, current_x + 1, current_y) {
-					if let Ok(unwrapped) = check.get(checking) {
-						if unwrapped.smooths {
-							smoothing_flags |= 4;
-						}
-					}
-				}
-				if let Some(checking) = tile_at(&chunks, current_x - 1, current_y) {
-					if let Ok(unwrapped) = check.get(checking) {
-						if unwrapped.smooths {
-							smoothing_flags |= 8;
-						}
-					}
-				}
-				sprite.index = smoothing_flags;
-			}
+	for (entity, block, mut sprite, mut transfem) in &mut tiles {
+		if !block.smooths { continue; }
+
+		if let Some((current_x, current_y)) = find_tile(&chunks, entity) {
+			sprite.index |=
+				match tile_at(&chunks, current_x, current_y + 1) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile.smooths {
+							true => 1,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				} |
+				match tile_at(&chunks, current_x, current_y - 1) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile.smooths {
+							true => 2,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				} |
+				match tile_at(&chunks, current_x + 1, current_y) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile.smooths {
+							true => 4,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				} |
+				match tile_at(&chunks, current_x - 1, current_y) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile.smooths {
+							true => 8,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				};
+
+			transfem.translation.x = current_x as f32 * 8.0;
+			transfem.translation.y = current_y as f32 * 8.0 - 12.0;
 		}
 	}
 }
