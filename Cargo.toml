@@ -12,5 +12,5 @@ opt-level = 1
 opt-level = 3
 
 [dependencies]
-bevy = {version = "0.9.x", features = ["dynamic"]}
+bevy = {version = "0.9.x", features = ["dynamic", "trace"]}
 bevy_pixel_camera = { git = "https://github.com/drakmaniso/bevy_pixel_camera" }
