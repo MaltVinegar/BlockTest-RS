@@ -1,5 +1,5 @@
 
-//#![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
+use std::io::prelude::*;
 
 use bevy:: {
 	prelude::*,
@@ -7,6 +7,7 @@ use bevy:: {
 		Diagnostics,
 		FrameTimeDiagnosticsPlugin
 	},
+	ecs::schedule::ShouldRun,
 };
 use bevy_pixel_camera::*;
 use std::collections::HashMap;
@@ -16,47 +17,204 @@ const BACKGROUND_LAYER: f32 = 0.0;
 const BLOCK_LAYER: f32 = 1.0;
 const MOB_LAYER: f32 = 2.0;
 
+type TileId = usize;
+
 fn main() {
-    static POSTSTARTUP: &str = "poststartup";
+    static CHUNKINIT: &str = "chunkinit";
+
 	App::new()
 		.insert_resource(ClearColor(Color::rgb(0.3, 0.6, 0.6)))
-		.add_startup_stage_after(StartupStage::PostStartup, POSTSTARTUP, SystemStage::parallel())
+		.insert_resource(TilesShouldUpdate{ should_update: true })
+		.insert_resource(TileChangeQueue {..default()})
+
+		.add_startup_stage_after(StartupStage::PostStartup, CHUNKINIT, SystemStage::parallel())
 
 		.add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
 		.add_plugin(FrameTimeDiagnosticsPlugin::default())
 		.add_plugin(PixelCameraPlugin)
 
 		.add_startup_system(setup)
-		.add_startup_system_to_stage(POSTSTARTUP, init_blocks)
+		.add_startup_system_to_stage(CHUNKINIT, init_chunks)
 
-		.add_system(fps_update_system)
-//		.add_system(update_blocks)
-		.add_system(player_input)
-		.add_system(do_physics)
-		.add_system(walk_animation)
-		.add_system(update_camera)
+		.add_system_set(
+			SystemSet::new()
+				.label("update")
+				.with_run_criteria(run_if_tiles_should_update)
+				.with_system(change_tile_sprites)
+				.with_system(update_tiles.after(change_tile_sprites))
+		)
+		.add_system_set(
+			SystemSet::new()
+				.label("main")
+				.with_system(fps_update_system)
+				.with_system(player_input)
+				.with_system(do_physics)
+				.with_system(walk_animation)
+				.with_system(update_camera)
+				.with_system(debug_input)
+		)
 	.run();
 }
 
 #[derive(Resource)]
-struct BlockId {
-	block_by_ids: [(Handle<TextureAtlas>, Tile); BlockId::BLOCKS],
+struct TilesShouldUpdate {
+	should_update: bool,
 }
 
-impl BlockId {
-	const AIR: usize = 0;
-	const DIRT: usize = 1;
-	const GRASS: usize = 2;
+#[derive(Resource, Default)]
+struct TileChangeQueue {
+	queue: Vec<(TileId, usize, usize)>,
+}
+
+impl TileChangeQueue {
+	fn push(&mut self, to_push: (TileId, usize, usize)) {
+		self.queue.push(to_push);
+	}
+}
+
+fn run_if_tiles_should_update(
+	mut should_update: ResMut<TilesShouldUpdate>
+) -> ShouldRun {
+	if should_update.should_update {
+		should_update.should_update = false;
+		ShouldRun::Yes
+	} else {
+		ShouldRun::No
+	}
+}
+
+fn change_tile_sprites(
+	mut to_change: ResMut<TileChangeQueue>,
+	tile_ids: Res<TileIds>,
+	mut tiles: Query<(&mut Tile, &mut Handle<TextureAtlas>, &mut TextureAtlasSprite)>,
+	chunks: Query<&Chunk>,
+) {
+	for (change_to, x_pos, y_pos) in &to_change.queue {
+		if let Some(changing_entity) = chunks.tile_at(*x_pos, *y_pos) {
+			if let Ok((mut changing_tile, mut changing_atlas, mut changing_texture)) = tiles.get_mut(changing_entity) {
+				changing_tile.id = *change_to;
+				*changing_atlas = tile_ids.by_id(*change_to).texture.clone();
+				changing_texture.index = 0;
+			}
+		}
+	}
+	to_change.queue.clear();
+}
+
+fn update_tiles(
+	tile_ids: Res<TileIds>,
+	chunks: Query<&Chunk>,
+	check: Query<&Tile>,
+	mut tiles: Query<(Entity, &Tile, &mut TextureAtlasSprite, &mut Transform)>,
+) {
+	for (entity, block, mut sprite, mut transfem) in &mut tiles {
+		if !tile_ids.by_tile(block).smooths { continue; }
+
+		if let Some((current_x, current_y)) = chunks.find_tile(entity) {
+			sprite.index =
+				match chunks.tile_at(current_x, current_y + 1) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile_ids.by_tile(tile).smooths {
+							true => 1,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				} |
+				match chunks.tile_at(current_x, current_y - 1) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile_ids.by_tile(tile).smooths {
+							true => 2,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				} |
+				match chunks.tile_at(current_x + 1, current_y) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile_ids.by_tile(tile).smooths {
+							true => 4,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				} |
+				match chunks.tile_at(current_x - 1, current_y) {
+					Some(checking) =>
+					match check.get(checking) {
+						Ok(tile) => match tile_ids.by_tile(tile).smooths {
+							true => 8,
+							false => 0,
+						},
+						_ => 0,
+					},  _ => 0,
+				};
+
+			transfem.translation.x = current_x as f32 * 8.0;
+			transfem.translation.y = current_y as f32 * 8.0 - 12.0;
+		}
+	}
+}
+
+#[derive(Resource)]
+struct TileIds {
+	tiles: [TileData; Self::BLOCKS],
+}
+
+impl TileIds {
+	const AIR: TileId = 0;
+	const DIRT: TileId = 1;
+	const GRASS: TileId = 2;
 	const BLOCKS: usize = 3;
 
-	fn new(icons: [(Handle<TextureAtlas>, Tile); BlockId::BLOCKS]) -> Self {
+	#[inline]
+	fn new(tiles: [TileData; Self::BLOCKS]) -> Self {
 		Self {
-			block_by_ids: icons
+			tiles: tiles
 		}
 	}
 
-	fn by_id(&self, id: usize) -> &(Handle<TextureAtlas>, Tile) {
-		&self.block_by_ids[id]
+	#[inline]
+	fn by_id(&self, id: TileId) -> &TileData {
+		&self.tiles[id]
+	}
+
+	#[inline]
+	fn by_tile(&self, tile: &Tile) -> &TileData {
+		&self.tiles[tile.id]
+	}
+
+	#[inline]
+	fn make_texture(&self, id: TileId) -> SpriteSheetBundle {
+		SpriteSheetBundle {
+			texture_atlas: self.tiles[id].texture.clone(),
+			transform: Transform {
+				translation: Vec3::new(0.0, 0.0, BLOCK_LAYER),
+				..default()
+			},
+			sprite: TextureAtlasSprite {
+				..default()
+			},
+			..default()
+		}
+	}
+
+	#[inline]
+	fn make_tile(&self, id: TileId) -> Tile {
+		Tile {
+			id: id
+		}
+	}
+
+	#[inline]
+	fn make_bundle(&self, id: TileId) -> (Tile, SpriteSheetBundle) {
+		(
+			self.make_tile(id),
+			self.make_texture(id),
+		)
 	}
 }
 
@@ -128,10 +286,29 @@ struct PlayerAnimationTimer(Timer);
 
 #[derive(Component, Copy, Clone)]
 struct Tile {
-	#[allow(unused)]
-	id: usize,
-	smooths: bool,
+	id: TileId,
 }
+
+#[derive(Component)]
+struct TileData {
+	id: TileId,
+	smooths: bool,
+	texture: Handle<TextureAtlas>,
+}
+
+impl TileData {
+	#[inline]
+	fn new(id: TileId, smooths: bool, texture: Handle<TextureAtlas>) -> Self {
+		Self {
+			id: id,
+			smooths: smooths,
+			texture: texture,
+		}
+	}
+}
+
+#[derive(Component)]
+struct FpsText;
 
 #[derive(Component)]
 struct Chunk {
@@ -140,9 +317,6 @@ struct Chunk {
 	x_pos: usize,
 	y_pos: usize,
 }
-
-#[derive(Component)]
-struct FpsText;
 
 impl Chunk {
 	const WIDTH: usize = 64;
@@ -168,6 +342,7 @@ impl Chunk {
 		}
 	}
 
+	#[inline]
 	fn at(&self, x: usize, y: usize) -> Option<Entity> {
 		match x < Self::WIDTH && y < Self::HEIGHT {
 			true => Some(self.tiles[x + y * Self::WIDTH]),
@@ -175,13 +350,16 @@ impl Chunk {
 		}
 	}
 
+	/*    #[inline]
 	fn at_mut(&mut self, x: usize, y: usize) -> Option<&mut Entity> {
 		match x < Self::WIDTH && y < Self::HEIGHT {
 			true => Some(&mut self.tiles[x + y * Self::WIDTH]),
 			false => None,
 		}
-	}
+	}*/
 
+	#[allow(unused)]
+	#[inline]
 	fn update_hashmap(&mut self) {
 		self.tile_map = 
 			|tiles: &[Entity; Self::SIZE]| -> HashMap<Entity, usize> {
@@ -193,112 +371,128 @@ impl Chunk {
 			}(&self.tiles)
 	}
 
+	#[inline]
 	fn find(&self, to_find: Entity) -> Option<(usize, usize)> {
 		match self.tile_map.get(&to_find) {
 			Some(found) => Some((found % Self::WIDTH, found / Self::HEIGHT)),
 			None => None
 		}
 	}
-
-	#[allow(unused)]
-	fn serialize(&self) {
-		todo!();
-	}
-
-	#[allow(unused)]
-	fn deserialize() -> Self {
-		todo!();
-	}
 }
 
-fn tile_at(search_through: &Query<&Chunk>, absolute_x: usize, absolute_y: usize) -> Option<Entity> {
-	let chunk_x: usize = absolute_x / Chunk::WIDTH;
-	let local_x: usize = absolute_x % Chunk::WIDTH;
-	let chunk_y: usize = absolute_y / Chunk::WIDTH;
-	let local_y: usize = absolute_y % Chunk::HEIGHT;
-	for chunk in search_through {
-		if chunk.x_pos == chunk_x && chunk.y_pos == chunk_y {
-			if let Some(tile) = chunk.at(local_x, local_y) {
-				return Some(tile);
-			}
-		}
-	}
-	None
+trait ChunkQuery {
+	fn tile_at(&self, absolute_x: usize, absolute_y: usize) -> Option<Entity>;
+	fn find_tile(&self, to_find: Entity) -> Option<(usize, usize)>;
 }
 
-fn tile_at_mut(search_through: &Query<&mut Chunk>, absolute_x: usize, absolute_y: usize) -> Option<Entity> {
-	let chunk_x: usize = absolute_x / Chunk::WIDTH;
-	let local_x: usize = absolute_x % Chunk::WIDTH;
-	let chunk_y: usize = absolute_y / Chunk::WIDTH;
-	let local_y: usize = absolute_y % Chunk::HEIGHT;
-	for chunk in search_through {
-		if chunk.x_pos == chunk_x && chunk.y_pos == chunk_y {
-			if let Some(tile) = chunk.at(local_x, local_y) {
-				return Some(tile);
-			}
-		}
-	}
-	None
-}
-
-// Option<Entity>
-// Despawn the return entity
-fn set_tile_at(search_through: &mut Query<&mut Chunk>, tiles: &mut Query<(&Tile, &mut TextureAtlasSprite)>, smooths: bool,  replace_with: Entity, absolute_x: usize, absolute_y: usize) -> Option<(Entity, usize)> {
-	let chunk_x: usize = absolute_x / Chunk::WIDTH;
-	let local_x: usize = absolute_x % Chunk::WIDTH;
-	let chunk_y: usize = absolute_y / Chunk::WIDTH;
-	let local_y: usize = absolute_y % Chunk::HEIGHT;
-
-	let check: [Option<Entity>; 4] = [
-		tile_at_mut(search_through, absolute_x, absolute_y - 1),
-		tile_at_mut(search_through, absolute_x, absolute_y + 1),
-		tile_at_mut(search_through, absolute_x - 1, absolute_y),
-		tile_at_mut(search_through, absolute_x + 1, absolute_y),
-	];
-
-	for mut chunk in search_through {
-		if chunk.x_pos == chunk_x && chunk.y_pos == chunk_y {
-			if let Some(tile) = chunk.at_mut(local_x, local_y) {
-				let to_despawn: Entity = *tile;
-				*tile = replace_with;
-				let mut smoothed_sides: usize = 0;
-				for checking in 0..check.len() {
-					match check[checking] {
-						Some(found) => 
-							if let Ok((smoothing_tile, mut sprite)) = tiles.get_mut(found) {
-								if smoothing_tile.smooths {
-									if smooths {
-										smoothed_sides |= 1 << checking;
-										sprite.index |= 1 << checking;
-									} else {
-										sprite.index = sprite.index & ((1 | 2 | 4 | 8) ^ (1 << checking));
-									}
-								}
-							},
-						_ => (),
-					}
+impl<'w, 's> ChunkQuery for Query<'w, 's, &Chunk> {
+	fn tile_at(&self, absolute_x: usize, absolute_y: usize) -> Option<Entity> {
+		let chunk_x: usize = absolute_x / Chunk::WIDTH;
+		let local_x: usize = absolute_x % Chunk::WIDTH;
+		let chunk_y: usize = absolute_y / Chunk::WIDTH;
+		let local_y: usize = absolute_y % Chunk::HEIGHT;
+		for chunk in self {
+			if chunk.x_pos == chunk_x && chunk.y_pos == chunk_y {
+				if let Some(tile) = chunk.at(local_x, local_y) {
+					return Some(tile);
 				}
-				let smoothed_sides_final: usize =
-					((smoothed_sides & 1) << 1) |
-					((smoothed_sides & 2) >> 1) |
-					((smoothed_sides & 4) << 1) |
-					((smoothed_sides & 8) >> 1);
-
-				chunk.update_hashmap();
-				return Some((to_despawn, smoothed_sides_final));
 			}
+		}
+		None
+	}
+
+	fn find_tile(&self, to_find: Entity) -> Option<(usize, usize)> {
+		for chunk in self {
+			if let Some((x, y)) = chunk.find(to_find) {
+				return Some((x + chunk.x_pos * 64, y + chunk.y_pos * 64));
+			}
+		}
+		None
+	}
+}
+
+fn write_chunk(chunk: (Entity, &Chunk), commands: &mut Commands, tiles: &Query<&Tile>) {
+	let mut save_path = std::env::current_dir().unwrap();
+	save_path.push("save");
+	save_path.push(format!("{}-{}.chunk", chunk.1.x_pos, chunk.1.y_pos));
+	let mut saving_to = std::fs::File::create(save_path).unwrap();
+
+	for entity in chunk.1.tiles {
+		if let Ok(found) = tiles.get(entity) {
+			match saving_to.write_all(&found.id.to_be_bytes()) {
+				Ok(_) => (),
+				Err(_) => return,//TODO: HANDLE THIS BETTER
+			};
+			commands.entity(entity).despawn();
+		}
+	}
+	commands.entity(chunk.0).despawn();
+}
+
+fn read_chunk(file: std::path::PathBuf, tile_ids: &Res<TileIds>, commands: &mut Commands, x_pos: usize, y_pos: usize) -> Result<Entity, &'static str> {
+	if !std::path::Path::new(&file).exists() {
+		Err("File doesn't exist")
+	} else {
+		let mut reading = std::fs::File::open(file).unwrap();
+
+		let tile_data: [usize; Chunk::SIZE] = core::array::from_fn(
+			|_| -> usize {
+				let mut data: [u8; std::mem::size_of::<usize>()] = [0; std::mem::size_of::<usize>()];
+				match reading.read(&mut data) {
+					Ok(_) => (),
+					Err(_) => panic!(),
+				}
+				return usize::from_be_bytes(data);
+			}
+		);
+
+		let tile_entities: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] = 
+		core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |x| -> Entity {
+			commands.spawn(
+				tile_ids.make_bundle(tile_data[x + y * Chunk::WIDTH]
+			)).id()
+		})});
+
+		Ok(commands.spawn(
+			Chunk::new(
+				tile_entities,
+				x_pos, y_pos
+			)
+		).id())
+	}
+}
+
+fn find_chunk<'s>(search_through: &'s Query<(Entity, &Chunk)>, x_pos: usize, y_pos: usize) -> Option<(Entity, &'s Chunk)> {
+	for chunk in search_through {
+		if chunk.1.x_pos == x_pos && chunk.1.y_pos == y_pos {
+			return Some((chunk.0, chunk.1));
 		}
 	}
 	None
 }
 
-fn find_tile(search_through: &Query<&Chunk>, to_find: Entity) -> Option<(usize, usize)> {
-	for chunk in search_through {
-		if let Some((x, y)) = chunk.find(to_find) {
-			return Some((x + chunk.x_pos * 64, y + chunk.y_pos * 64));
+fn debug_input(
+	mut commands: Commands,
+	mut update_tiles: ResMut<TilesShouldUpdate>,
+	keys: Res<Input<KeyCode>>,
+	tile_ids: Res<TileIds>,
+	chunks: Query<(Entity, &Chunk)>,
+	tiles: Query<&Tile>,
+) {
+	//3, 2
+	if let Some(chunk) = find_chunk(&chunks, 3, 2) {
+		if keys.just_pressed(KeyCode::R) {
+			write_chunk((chunk.0, chunk.1), &mut commands, &tiles);
+			update_tiles.should_update = true;
 		}
+	} else if keys.just_pressed(KeyCode::T) {
+		let mut read_path = std::env::current_dir().unwrap();
+		read_path.push("save");
+		read_path.push(format!("{}-{}.chunk", 3, 2));
+		let _ = read_chunk(read_path, &tile_ids, &mut commands, 3, 2);
+		update_tiles.should_update = true;
 	}
-	None
 }
 
 fn update_camera (
@@ -316,19 +510,19 @@ fn update_camera (
 }
 
 fn player_input (
-	mut commands: Commands,
+	windows: Res<Windows>,
 	keys: Res<Input<KeyCode>>,
 	mouse_keys: Res<Input<MouseButton>>,
-	block_ids: Res<BlockId>,
-	windows: Res<Windows>,
+	mut update_tiles: ResMut<TilesShouldUpdate>,
+	mut update_queue: ResMut<TileChangeQueue>,
 	pixel_projection: Query<&PixelProjection>,
-	mut chunks: Query<&mut Chunk>,
-	mut blocks: Query<(&Tile, &mut TextureAtlasSprite)>,
 	mut query: Query<&mut Mob, With<Player>>,
 ) {
 	if let Ok(mut mob) = query.get_single_mut() {
-		if keys.just_pressed(KeyCode::Space) {
+		if keys.pressed(KeyCode::Space) {
 			mob.jump_state = JumpState::TryJump;
+		} else {
+			mob.jump_state = JumpState::None;
 		}
 		mob.walk_state = WalkState::None;
 		if keys.pressed(KeyCode::A) {
@@ -338,69 +532,28 @@ fn player_input (
 			mob.walk_state = WalkState::TryRight;
 		}
 
-		/*if let Ok(mut transfem) = cam.get_single_mut() {
-			if keys.just_pressed(KeyCode::Up) {
-				transfem.translation.y += 8.0;
-			}
-			if keys.pressed(KeyCode::Right) {
-				transfem.translation.x += 1.0;
-			}
-			if keys.pressed(KeyCode::Down) {
-				transfem.translation.y -= 1.0;
-			}
-			if keys.pressed(KeyCode::Left) {
-				transfem.translation.x -= 1.0;
-			}
-		}*/
-
 		let window = windows.get_primary().unwrap();
 
 		if mouse_keys.any_just_pressed([MouseButton::Left, MouseButton::Right]) {
 			if let Some(cursor) = window.cursor_position() {
 				if let Ok(projection) = pixel_projection.get_single() {
-					let window_width: f32 = window.width();
-					let window_height: f32 = window.height();
-					let play_width: f32 = projection.desired_width.unwrap_or(0) as f32 * projection.zoom as f32 * 0.5;
-					let play_height: f32 = projection.desired_height.unwrap_or(0) as f32 * projection.zoom as f32 * 0.5;
-					let real_mouse_x: f32 = ((cursor.x - window_width * 0.5) / projection.zoom as f32).round();
-					let real_mouse_y: f32 = ((cursor.y - window_height * 0.5) / projection.zoom as f32).round();
+					let play_width: f32 = projection.desired_width.unwrap_or(0) as f32 * 0.5;
+					let play_height: f32 = projection.desired_height.unwrap_or(0) as f32 * 0.5;
+					let real_mouse_x: f32 = ((cursor.x - window.width() * 0.5) / projection.zoom as f32).round();
+					let real_mouse_y: f32 = ((cursor.y - window.height() * 0.5) / projection.zoom as f32).round();
 
-					if real_mouse_x.abs() <= play_width/2.0 && real_mouse_y.abs() <= play_height/2.0 {
+					if real_mouse_x.abs() <= play_width && real_mouse_y.abs() <= play_height {
 						let clicked_block_x: usize = (mob.position.x + (real_mouse_x / 8.0)).round() as usize;
 						let clicked_block_y: usize = (mob.position.y + (real_mouse_y + 12.0) / 8.0).round() as usize;
 
-						let (handle, tile) = match mouse_keys.just_pressed(MouseButton::Left) {
-							true => block_ids.by_id(1),
-							false => block_ids.by_id(0),
-						};
+						update_tiles.should_update = true;
 
-						let new_block = commands.spawn((
-							tile.clone(),
-						)).id();
-
-						match set_tile_at(&mut chunks, &mut blocks, tile.smooths, new_block, clicked_block_x, clicked_block_y) {
-							Some((to_despawn, sides_smoothed)) => {
-								commands.entity(to_despawn).despawn();
-
-								commands.entity(new_block).insert( SpriteSheetBundle {
-									texture_atlas: handle.clone(),
-									transform: Transform {
-										translation: Vec3::new(
-											clicked_block_x as f32 * 8.0,
-											clicked_block_y as f32 * 8.0 - 12.0,
-											BLOCK_LAYER
-										),
-										..default()
-									},
-									sprite: TextureAtlasSprite {
-										index: sides_smoothed,
-										..default()
-									},
-									..default()
-								});
-							},
-							None => commands.entity(new_block).despawn()
-						};
+						update_queue.push((
+							match mouse_keys.just_pressed(MouseButton::Left) {
+								true => TileIds::DIRT,
+								false => TileIds::AIR,
+							}, clicked_block_x, clicked_block_y
+						));
 					}
 				}
 			}
@@ -412,6 +565,7 @@ const GRAVITY: f32 = 9.81;
 
 fn do_physics(
 	time: Res<Time>,
+	tile_ids: Res<TileIds>,
 	mut mob_query: Query<&mut Mob>,
 	chunks: Query<&Chunk>,
 	blocks: Query<&Tile>,
@@ -421,7 +575,7 @@ fn do_physics(
 		new_velocity += if mob.touching_grass {
 			(
 			match mob.jump_state {
-				JumpState::TryJump => {mob.jump_state = JumpState::None; Vec2::new(0.0, 30.0)},
+				JumpState::TryJump => Vec2::new(0.0, 30.0),
 				_ => Vec2::ZERO,
 			} + match mob.walk_state {
 				WalkState::None => Vec2::ZERO,
@@ -439,25 +593,25 @@ fn do_physics(
 				let checking_y = y + new_loc.y.trunc() as usize;
 				let checking_x = x + new_loc.x.trunc() as usize;
 
-				if let Some(tile_colliding) = tile_at(&chunks, mob.position.x.trunc() as usize + x, checking_y) {
+				if let Some(tile_colliding) = chunks.tile_at(mob.position.x.trunc() as usize + x, checking_y) {
 					if let Ok(tile) = blocks.get(tile_colliding) {
-						if tile.smooths {
+						if tile_ids.by_tile(tile).smooths {
 							new_velocity.y = 0.0;
 							new_loc.y = mob.position.y.trunc();
 							new_velocity.x -= new_velocity.x * 10.0 * time.delta_seconds();
 							mob.touching_grass = true;
 						}
 					}
-				} if let Some(tile_colliding) = tile_at(&chunks, checking_x, mob.position.y.trunc() as usize + y) {
+				} if let Some(tile_colliding) = chunks.tile_at(checking_x, mob.position.y.trunc() as usize + y) {
 					if let Ok(tile) = blocks.get(tile_colliding) {
-						if tile.smooths {
+						if tile_ids.by_tile(tile).smooths {
 							new_velocity.x = 0.0;
 							new_loc.x = mob.position.x;
 						}
 					}
-				} else if let Some(tile_colliding) = tile_at(&chunks, checking_x, checking_y) {
+				} else if let Some(tile_colliding) = chunks.tile_at(checking_x, checking_y) {
 					if let Ok(tile) = blocks.get(tile_colliding) {
-						if tile.smooths {
+						if tile_ids.by_tile(tile).smooths {
 							new_velocity.x = 0.0;
 							new_loc.x = mob.position.x;
 						}
@@ -559,7 +713,6 @@ fn setup (
 
 	let _: Handle<Image> = asset_server.load("Sprites/delete.png");
 	let _: Handle<Image> = asset_server.load("Sprites/player_human.png");
-//	let _: Handle<Image> = asset_server.load("Sprites/player_lizard.png");
 	let _: Handle<Image> = asset_server.load("Sprites/player_radlad.png");
 
 	let player_walk_human: Handle<Image> = asset_server.load("Sprites/player_walk_human.png");
@@ -691,11 +844,11 @@ fn setup (
 	let _: Handle<TextureAtlas> = texture_atlases.add(wood_atlas);
 
 	commands.insert_resource(
-		BlockId::new(
+		TileIds::new(
 			[
-				(air_spritesheet.clone(), Tile {id: BlockId::AIR, smooths: false}),
-				(dirt_spritesheet.clone(), Tile {id: BlockId::DIRT, smooths: true}),
-				(grass_spritesheet.clone(), Tile {id: BlockId::GRASS, smooths: true}),
+				TileData::new(TileIds::AIR, false, air_spritesheet.clone()),
+				TileData::new(TileIds::DIRT,true, dirt_spritesheet.clone()),
+				TileData::new(TileIds::GRASS, true, grass_spritesheet.clone()),
 			]
 		)
 	);
@@ -722,418 +875,139 @@ fn setup (
 		},
 	));
 
-	let chunk_data0: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn(
-			|y| -> [Entity; Chunk::WIDTH] {
-				core::array::from_fn(
-					|_| -> Entity {
-						match y {
-							0..=9 =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: dirt_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 1, smooths: true },
-								)).id(),
-							10 =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: grass_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 2, smooths: true },
-								)).id(),
-							11..=Chunk::HEIGHT =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: air_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 0, smooths: false },
-								)).id(),
-							_ => panic!(),
-						}
-					}
-				)
-			}
-		);
-
-	let chunk_data1: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn(
-			|y| -> [Entity; Chunk::WIDTH] {
-				core::array::from_fn(
-					|_| -> Entity {
-						match y {
-							0..=8 =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: dirt_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 1, smooths: true },
-								)).id(),
-							9 =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: grass_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 2, smooths: true },
-								)).id(),
-							10..=Chunk::HEIGHT =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: air_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 0, smooths: false },
-								)).id(),
-							_ => panic!(),
-						}
-					}
-				)
-			}
-		);
-
-	let chunk_data2: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn(
-			|y| -> [Entity; Chunk::WIDTH] {
-				core::array::from_fn(
-					|_| -> Entity {
-						match y {
-							0..=10 =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: dirt_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 1, smooths: true },
-								)).id(),
-							11 =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: grass_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 2, smooths: true },
-								)).id(),
-							12..=Chunk::HEIGHT =>
-								commands.spawn((
-									SpriteSheetBundle {
-										texture_atlas: air_spritesheet.clone(),
-										transform: Transform {
-											translation: Vec3 {
-												z: BLOCK_LAYER,
-												..default()
-											},
-											..default()
-										},
-										..default()
-									},
-									Tile { id: 0, smooths: false },
-								)).id(),
-							_ => panic!(),
-						}
-					}
-				)
-			}
-		);
-
-	let chunk_data3: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
-			core::array::from_fn( |x| -> Entity {
-				match x {
-					0..=Chunk::HEIGHT =>
-						commands.spawn((
-							SpriteSheetBundle {
-								texture_atlas: air_spritesheet.clone(),
-								transform: Transform {
-									translation: Vec3 {
-										z: BLOCK_LAYER,
-										..default()
-									},
-									..default()
-								},
-								..default()
-							},
-							Tile { id: 0, smooths: false },
-						)).id(),
-					_ => panic!(),
-	}})});
-	let chunk_data4: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
-			core::array::from_fn( |x| -> Entity {
-				match x {
-					0..=Chunk::HEIGHT =>
-						commands.spawn((
-							SpriteSheetBundle {
-								texture_atlas: air_spritesheet.clone(),
-								transform: Transform {
-									translation: Vec3 {
-										z: BLOCK_LAYER,
-										..default()
-									},
-									..default()
-								},
-								..default()
-							},
-							Tile { id: 0, smooths: false },
-						)).id(),
-					_ => panic!(),
-	}})});
-	let chunk_data5: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
-			core::array::from_fn( |x| -> Entity {
-				match x {
-					0..=Chunk::HEIGHT =>
-						commands.spawn((
-							SpriteSheetBundle {
-								texture_atlas: air_spritesheet.clone(),
-								transform: Transform {
-									translation: Vec3 {
-										z: BLOCK_LAYER,
-										..default()
-									},
-									..default()
-								},
-								..default()
-							},
-							Tile { id: 0, smooths: false },
-						)).id(),
-					_ => panic!(),
-	}})});
-	let chunk_data6: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
-			core::array::from_fn( |x| -> Entity {
-				match x {
-					0..=Chunk::HEIGHT =>
-						commands.spawn((
-							SpriteSheetBundle {
-								texture_atlas: dirt_spritesheet.clone(),
-								transform: Transform {
-									translation: Vec3 {
-										z: BLOCK_LAYER,
-										..default()
-									},
-									..default()
-								},
-								..default()
-							},
-							Tile { id: 1, smooths: true },
-						)).id(),
-					_ => panic!(),
-	}})});
-	let chunk_data7: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
-			core::array::from_fn( |x| -> Entity {
-				match x {
-					0..=Chunk::HEIGHT =>
-						commands.spawn((
-							SpriteSheetBundle {
-								texture_atlas: dirt_spritesheet.clone(),
-								transform: Transform {
-									translation: Vec3 {
-										z: BLOCK_LAYER,
-										..default()
-									},
-									..default()
-								},
-								..default()
-							},
-							Tile { id: 1, smooths: true },
-						)).id(),
-					_ => panic!(),
-	}})});
-	let chunk_data8: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
-		core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
-			core::array::from_fn( |x| -> Entity {
-				match x {
-					0..=Chunk::HEIGHT =>
-						commands.spawn((
-							SpriteSheetBundle {
-								texture_atlas: dirt_spritesheet.clone(),
-								transform: Transform {
-									translation: Vec3 {
-										z: BLOCK_LAYER,
-										..default()
-									},
-									..default()
-								},
-								..default()
-							},
-							Tile { id: 1, smooths: true },
-						)).id(),
-					_ => panic!(),
-	}})});
-
-	commands.spawn(
-		Chunk::new(
-			chunk_data6,
-			1, 1
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data7,
-			2, 1
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data8,
-			3, 1
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data0,
-			1, 2
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data1,
-			2, 2
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data2,
-			3, 2
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data3,
-			1, 3
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data4,
-			2, 3
-		)
-	);
-	commands.spawn(
-		Chunk::new(
-			chunk_data5,
-			3, 3
-		)
-	);
-
 	commands.spawn(PixelCameraBundle::from_resolution(320, 240));
 }
 
-fn init_blocks(
-	chunks: Query<&Chunk>,
-	check: Query<&Tile>,
-	mut tiles: Query<(Entity, &Tile, &mut TextureAtlasSprite, &mut Transform)>,
+fn init_chunks(
+	mut commands: Commands,
+	tile_ids: Res<TileIds>,
 ) {
-	for (entity, block, mut sprite, mut transfem) in &mut tiles {
-		if !block.smooths { continue; }
+	let chunk_data0: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
+	core::array::from_fn( |_| -> Entity {
+		commands.spawn(tile_ids.make_bundle(TileIds::DIRT)).id()
+	})});
+	commands.spawn(
+		Chunk::new(
+			chunk_data0,
+			1, 1
+		)
+	);
 
-		if let Some((current_x, current_y)) = find_tile(&chunks, entity) {
-			sprite.index |=
-				match tile_at(&chunks, current_x, current_y + 1) {
-					Some(checking) =>
-					match check.get(checking) {
-						Ok(tile) => match tile.smooths {
-							true => 1,
-							false => 0,
-						},
-						_ => 0,
-					},  _ => 0,
-				} |
-				match tile_at(&chunks, current_x, current_y - 1) {
-					Some(checking) =>
-					match check.get(checking) {
-						Ok(tile) => match tile.smooths {
-							true => 2,
-							false => 0,
-						},
-						_ => 0,
-					},  _ => 0,
-				} |
-				match tile_at(&chunks, current_x + 1, current_y) {
-					Some(checking) =>
-					match check.get(checking) {
-						Ok(tile) => match tile.smooths {
-							true => 4,
-							false => 0,
-						},
-						_ => 0,
-					},  _ => 0,
-				} |
-				match tile_at(&chunks, current_x - 1, current_y) {
-					Some(checking) =>
-					match check.get(checking) {
-						Ok(tile) => match tile.smooths {
-							true => 8,
-							false => 0,
-						},
-						_ => 0,
-					},  _ => 0,
-				};
+	let chunk_data1: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
+	core::array::from_fn( |_| -> Entity {
+		commands.spawn(tile_ids.make_bundle(TileIds::DIRT)).id()
+	})});
+	commands.spawn(
+		Chunk::new(
+			chunk_data1,
+			2, 1
+		)
+	);
 
-			transfem.translation.x = current_x as f32 * 8.0;
-			transfem.translation.y = current_y as f32 * 8.0 - 12.0;
-		}
-	}
+	let chunk_data2: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
+	core::array::from_fn( |_| -> Entity {
+		commands.spawn(tile_ids.make_bundle(TileIds::DIRT)).id()
+	})});
+	commands.spawn(
+		Chunk::new(
+			chunk_data2,
+			3, 1
+		)
+	);
+
+	let chunk_data3: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> Entity {
+			commands.spawn(
+				tile_ids.make_bundle(
+					match y {
+						0..=9 => TileIds::DIRT,
+						10 => TileIds::GRASS,
+						_ => TileIds::AIR,
+					})).id()
+		})
+	});
+	commands.spawn(
+		Chunk::new(
+			chunk_data3,
+			1, 2
+		)
+	);
+
+	let chunk_data4: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> Entity {
+			commands.spawn(
+				tile_ids.make_bundle(
+					match y {
+						0..=8 => TileIds::DIRT,
+						9 => TileIds::GRASS,
+						_ => TileIds::AIR,
+					})).id()
+		})
+	});
+	commands.spawn(
+		Chunk::new(
+			chunk_data4,
+			2, 2
+		)
+	);
+
+	let chunk_data5: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |y| -> [Entity; Chunk::WIDTH] {
+		core::array::from_fn( |_| -> Entity {
+			commands.spawn(
+				tile_ids.make_bundle(
+					match y {
+						0..=10 => TileIds::DIRT,
+						11 => TileIds::GRASS,
+						_ => TileIds::AIR,
+					})).id()
+		})
+	});
+	commands.spawn(
+		Chunk::new(
+			chunk_data5,
+			3, 2
+		)
+	);
+
+	let chunk_data6: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
+	core::array::from_fn( |_| -> Entity {
+		commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id()
+	})});
+	commands.spawn(
+		Chunk::new(
+			chunk_data6,
+			1, 3
+		)
+	);
+
+	let chunk_data7: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
+	core::array::from_fn( |_| -> Entity {
+		commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id()
+	})});
+	commands.spawn(
+		Chunk::new(
+			chunk_data7,
+			2, 3
+		)
+	);
+
+	let chunk_data8: [[Entity; Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |_| -> [Entity; Chunk::WIDTH] {
+	core::array::from_fn( |_| -> Entity {
+		commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id()
+	})});
+	commands.spawn(
+		Chunk::new(
+			chunk_data8,
+			3, 3
+		)
+	);
 }
