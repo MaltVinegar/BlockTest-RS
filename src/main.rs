@@ -23,23 +23,17 @@ fn main() {
 			FpsOverlayPlugin {
 				config: FpsOverlayConfig {
 					text_config: TextFont {
-						// Here we define size of our overlay
-						font_size: 42.0,
-						// If we want, we can use a custom font
+						font_size: 36.0,
 						font: default(),
-						// We could also disable font smoothing,
 						font_smoothing: FontSmoothing::default(),
 						..default()
 					},
-					// We can also change color of the overlay
-					text_color: OverlayColor::GREEN,
+					text_color: Color::srgb(0.0, 1.0, 0.0),
 					refresh_interval: core::time::Duration::from_millis(100),
-					enabled: true,
+					enabled: false,
 					frame_time_graph_config: FrameTimeGraphConfig {
-						enabled: true,
-						// The minimum acceptable fps
+						enabled: false,
 						min_fps: 20.0,
-						// The target fps
 						target_fps: 50.0,
 					},
 				},
@@ -55,13 +49,6 @@ fn main() {
 		.add_systems(PreUpdate, (change_tile_sprites, update_tiles).run_if(run_if_tiles_should_update))
 		.add_systems(Update, (fps_update_config, player_input, do_physics, walk_animation, update_camera, debug_input).chain())
 	.run();
-}
-
-struct OverlayColor;
-
-impl OverlayColor {
-    const RED: Color = Color::srgb(1.0, 0.0, 0.0);
-    const GREEN: Color = Color::srgb(0.0, 1.0, 0.0);
 }
 
 #[derive(Resource)]
@@ -89,17 +76,6 @@ fn run_if_tiles_should_update(
 		false
 	}
 }
-/*
-fn run_if_tiles_should_update(
-	mut should_update: ResMut<TilesShouldUpdate>
-) -> bool {
-	if should_update.should_update {
-		should_update.should_update = false;
-		true
-	} else {
-		false
-	}
-}*/
 
 fn change_tile_sprites(
 	mut to_change: ResMut<TileChangeQueue>,
@@ -331,9 +307,6 @@ impl TileData {
 	}
 }
 
-//#[derive(Component)]
-//struct FpsText;
-
 #[derive(Component)]
 struct Chunk {
 	tiles: [(Entity, Entity); Chunk::SIZE],
@@ -502,7 +475,6 @@ fn debug_input(
 	chunks: Query<&Chunk>,
 	tiles: Query<&Tile>,
 ) {
-	//3, 2
 	if let Some(chunk) = find_chunk(&chunks, 3, 2) {
 		if keys.just_pressed(KeyCode::KeyR) {
 			let mut write_path = std::env::current_dir().unwrap();
@@ -712,48 +684,10 @@ fn walk_animation(
 		}
 	}
 }
-/*
-#[allow(unused)]
-fn fps_update_system(
-	diagnostics: Res<DiagnosticsStore>,
-	player_query: Query<&Mob, With<Player>>,
-	mut query: Query<
-		&mut Text,
-		With<FpsText>
-	>
-) {
-	for mut text in &mut query {
-/*		if let Ok(player) = player_query.get_single() {
-			text.sections[1].value = format!("{:.2}:{:.2}:{}", player.position.x, player.position.y, player.touching_grass)
-		}*/
-		if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
-			if let Some(value) = fps.smoothed() {
-				text.sections[1].value = format!("{value:.2}");
-			}
-		}
-	}
-}
-*/
 
 fn fps_update_config(input: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<FpsOverlayConfig>) {
-	if input.just_pressed(KeyCode::Digit1) {
-		// Changing resource will affect overlay
-		if overlay.text_color == OverlayColor::GREEN {
-			overlay.text_color = OverlayColor::RED;
-		} else {
-			overlay.text_color = OverlayColor::GREEN;
-		}
-	}
-	if input.just_pressed(KeyCode::Digit2) {
-		overlay.text_config.font_size -= 2.0;
-	}
-	if input.just_pressed(KeyCode::Digit3) {
-		overlay.text_config.font_size += 2.0;
-	}
-	if input.just_pressed(KeyCode::Digit4) {
+	if input.just_pressed(KeyCode::KeyP) {
 		overlay.enabled = !overlay.enabled;
-	}
-	if input.just_released(KeyCode::Digit5) {
 		overlay.frame_time_graph_config.enabled = !overlay.frame_time_graph_config.enabled;
 	}
 }
@@ -767,34 +701,11 @@ fn setup (
 	commands.spawn((
 		Camera2d::default(),
 		Projection::from(OrthographicProjection {
-//			scaling_mode: bevy::camera::ScalingMode::Fixed { width: 720.0, height: 480.0 },
 			scale: 0.5,
 			..OrthographicProjection::default_2d()
         	})
 	));
 	settings.limiter = Limiter::from_framerate(60.0);
-	/*
-	commands.spawn((
-		TextBundle::from_sections([
-			TextSection::new(
-				"FPS: ",
-				TextFont {
-					font: asset_server.load("UI/small_font.ttf"),
-					font_size: 60.0,
-				},
-				TextColor {bevy::prelude::Color::Srgba(bevy::color::palettes::css::WHITE)},
-			),
-			TextSection::from_style(
-				TextFont {
-					font: asset_server.load("UI/small_font.ttf"),
-					font_size: 60.0,
-				},
-				TextColor {bevy::prelude::Color::Srgba(bevy::color::palettes::css::GOLD)},
-			)
-		]),
-		FpsText,
-	));
-	*/
 
 	let _: Handle<Image> = asset_server.load("title.png");
 	let _: Handle<Image> = asset_server.load("titlebg.png");
