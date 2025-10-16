@@ -7,6 +7,7 @@ use bevy:: {
 	text::FontSmoothing,
 };
 use std::collections::HashMap;
+use bevy_framepace::*;
 
 #[allow(unused)]
 const BACKGROUND_LAYER: f32 = 0.0;
@@ -16,8 +17,6 @@ const MOB_LAYER: f32 = 2.0;
 type TileId = usize;
 
 fn main() {
-	static CHUNKINIT: &str = "chunkinit";
-
 	App::new()
 		.add_plugins((
 			DefaultPlugins.set(ImagePlugin::default_nearest()),
@@ -39,13 +38,14 @@ fn main() {
 					frame_time_graph_config: FrameTimeGraphConfig {
 						enabled: true,
 						// The minimum acceptable fps
-						min_fps: 30.0,
+						min_fps: 20.0,
 						// The target fps
-						target_fps: 144.0,
+						target_fps: 50.0,
 					},
 				},
-			},
+			}
 		))
+		.add_plugins(FramepacePlugin)
 
 		.insert_resource(ClearColor(Color::srgb(0.3, 0.6, 0.6)))
 		.insert_resource(TilesShouldUpdate{ should_update: true })
@@ -53,7 +53,7 @@ fn main() {
 
 		.add_systems(Startup, (setup, init_chunks).chain())
 		.add_systems(PreUpdate, (change_tile_sprites, update_tiles).run_if(run_if_tiles_should_update))
-		.add_systems(Update, (fps_update_config, player_input, do_physics, walk_animation, update_camera, debug_input))
+		.add_systems(Update, (fps_update_config, player_input, do_physics, walk_animation, update_camera, debug_input).chain())
 	.run();
 }
 
@@ -107,8 +107,7 @@ fn change_tile_sprites(
 	mut tiles: Query<(&mut Tile, &mut Sprite)>,
 	chunks: Query<&Chunk>,
 ) {
-	println!("change_tile_sprites");
-	for (change_to, is_foreground, x_pos, y_pos) in &to_change.queue {
+	for (change_to, _, x_pos, y_pos) in &to_change.queue {
 		if let Some(entity) = chunks.tile_at(*x_pos, *y_pos) {
 		if let Ok((mut tile, mut sprite)) = tiles.get_mut(entity.1) {
 			tile.id = *change_to;
@@ -127,7 +126,6 @@ fn update_tiles(
 	mut should_update: ResMut<TilesShouldUpdate>,
 	mut tiles: Query<(Entity, &Tile, &mut Sprite, &mut Transform)>,
 ) {
-	println!("update_tiles");
 	should_update.should_update = false;
 	for (entity, block, mut sprite, mut transfem) in &mut tiles {
 		if !tile_ids.by_tile(block).smooths { continue; }
@@ -241,13 +239,6 @@ impl TileIds {
 	)}
 }
 
-#[derive(Bundle, Default)]
-struct PlayerBundle {
-	mob: Mob,
-	player: Player,
-	player_animation: PlayerAnimation,
-}
-
 #[derive(Copy, Clone)]
 enum JumpState {
 	TryJump,
@@ -323,12 +314,6 @@ struct Tile {
 }
 
 #[derive(Component)]
-struct Foreground;
-
-#[derive(Component)]
-struct Background;
-
-#[derive(Component)]
 struct TileData {
 	smooths: bool,
 	solid: bool,
@@ -384,7 +369,6 @@ impl Chunk {
 		}
 	}
 
-	#[allow(unused)]
 	#[inline]
 	fn update_hashmap(mut self) -> Self {
 		self.foreground_map = 
@@ -448,109 +432,90 @@ impl<'w, 's> ChunkQuery for Query<'w, 's, &Chunk> {
 	}
 }
 
-fn write_chunk(chunk: (Entity, &Chunk), commands: &mut Commands, tiles: &Query<&Tile>) {
-	let mut save_path = std::env::current_dir().unwrap();
-	save_path.push("save");
-	save_path.push(format!("{}-{}.chunk", chunk.1.x_pos, chunk.1.y_pos));
-	let mut saving_to = std::fs::File::create(save_path).unwrap();
+fn write_chunk(
+	chunk: &Chunk,
+	tiles: &Query<&Tile>,
+	file: std::path::PathBuf,
+) {
+	let mut saving_to = std::fs::File::create(file).unwrap();
 
-	for entity in chunk.1.tiles {
+	for entity in chunk.tiles {
 		if let Ok(found) = tiles.get(entity.0) {
 			match saving_to.write_all(&found.id.to_be_bytes()) {
 				Ok(_) => (),
 				Err(_) => return,//TODO: HANDLE THIS BETTER
 			};
-			commands.entity(entity.0).despawn();
 		}
 		if let Ok(found) = tiles.get(entity.1) {
 			match saving_to.write_all(&found.id.to_be_bytes()) {
 				Ok(_) => (),
 				Err(_) => return,//TODO: HANDLE THIS BETTER
 			};
-			commands.entity(entity.1).despawn();
 		}
 	}
-	commands.entity(chunk.0).despawn();
 }
 
-fn read_chunk(
-	commands: &mut Commands,
-	tile_ids: &Res<TileIds>,
+fn replace_chunk(
+	tile_change_queue: &mut ResMut<TileChangeQueue>,
 	file: std::path::PathBuf,
 	x_pos: usize,
-	y_pos: usize
-) -> Result<Entity, &'static str> {
-	if !std::path::Path::new(&file).exists() {
-		Err("File doesn't exist")
-	} else {
-		let mut reading = std::fs::File::open(file).unwrap();
+	y_pos: usize,
+) {
+	let mut reading = std::fs::File::open(file).unwrap();
 
-		let tile_data: [usize; Chunk::SIZE * 2] = core::array::from_fn(
-			|_| -> usize {
-				let mut data: [u8; std::mem::size_of::<usize>()] =
-					[0; std::mem::size_of::<usize>()];
-				match reading.read(&mut data) {
-					Ok(_) => (),
-					Err(_) => panic!(),
-				}
-				return usize::from_be_bytes(data);
+	let tile_data: [usize; Chunk::SIZE * 2] = core::array::from_fn(
+		|_| -> usize {
+			let mut data: [u8; std::mem::size_of::<usize>()] =
+				[0; std::mem::size_of::<usize>()];
+			match reading.read(&mut data) {
+				Ok(_) => (),
+				Err(_) => panic!(),
 			}
-		);
+			return usize::from_be_bytes(data);
+		}
+	);
 
-		let tile_entities: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] = 
-		core::array::from_fn( |y| -> [(Entity, Entity); Chunk::WIDTH] {
-			core::array::from_fn( |x| -> (Entity, Entity) {
-				(commands.spawn(
-					tile_ids.make_bundle(tile_data[(x + (y * Chunk::WIDTH)) * 2])
-				).id(),
-				commands.spawn(
-					tile_ids.make_bundle(tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1])
-				).id())
-			})
-		});
-
-		Ok(commands.spawn(
-			Chunk::new(
-				tile_entities,
-				x_pos, y_pos
-			)
-		).id())
+	for x in 0..=(Chunk::HEIGHT-1) {
+		for y in 0..=(Chunk::WIDTH-1) {
+			tile_change_queue.push((tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1], true, x + x_pos*Chunk::WIDTH, y + y_pos*Chunk::HEIGHT));
+		}
 	}
 }
 
 fn find_chunk<'s>(
-	search_through: &'s Query<(Entity, &Chunk)>,
+	search_through: &'s Query<&Chunk>,
 	x_pos: usize,
 	y_pos: usize
-) -> Option<(Entity, &'s Chunk)> {
+) -> Option<&'s Chunk> {
 	for chunk in search_through {
-		if chunk.1.x_pos == x_pos && chunk.1.y_pos == y_pos {
-			return Some((chunk.0, chunk.1));
+		if chunk.x_pos == x_pos && chunk.y_pos == y_pos {
+			return Some(chunk);
 		}
 	}
 	None
 }
 
 fn debug_input(
-	mut commands: Commands,
 	mut update_tiles: ResMut<TilesShouldUpdate>,
+	mut tile_update_queue: ResMut<TileChangeQueue>,
 	keys: Res<ButtonInput<KeyCode>>,
-	tile_ids: Res<TileIds>,
-	chunks: Query<(Entity, &Chunk)>,
+	chunks: Query<&Chunk>,
 	tiles: Query<&Tile>,
 ) {
 	//3, 2
 	if let Some(chunk) = find_chunk(&chunks, 3, 2) {
 		if keys.just_pressed(KeyCode::KeyR) {
-			write_chunk((chunk.0, chunk.1), &mut commands, &tiles);
+			let mut write_path = std::env::current_dir().unwrap();
+			write_path.push("save");
+			write_path.push(format!("{}-{}.chunk", 3, 2));
+			write_chunk(&chunk, &tiles, write_path);
+		} else if keys.just_pressed(KeyCode::KeyT) {
+			let mut read_path = std::env::current_dir().unwrap();
+			read_path.push("save");
+			read_path.push(format!("{}-{}.chunk", 3, 2));
+			replace_chunk(&mut tile_update_queue, read_path, 3, 2);
 			update_tiles.should_update = true;
 		}
-	} else if keys.just_pressed(KeyCode::KeyT) {
-		let mut read_path = std::env::current_dir().unwrap();
-		read_path.push("save");
-		read_path.push(format!("{}-{}.chunk", 3, 2));
-		let _ = read_chunk(&mut commands, &tile_ids, read_path, 3, 2);
-		update_tiles.should_update = true;
 	}
 }
 
@@ -578,7 +543,6 @@ fn player_input (
 	chunks: Query<&Chunk>,
 	tiles: Query<&Tile>,
 	mut query: Query<(&mut Player, &mut Mob)>,
-    	camera_q: Query<(&Camera, &GlobalTransform)>,
 ) {
 	if let Ok((mut player, mut mob)) = query.single_mut() {
 		if keys.pressed(KeyCode::Space) {
@@ -607,43 +571,30 @@ fn player_input (
 
 		if mouse_keys.any_just_pressed([MouseButton::Left, MouseButton::Right]) {
 		if let Some(cursor) = window.cursor_position() {
-		println!("\nhey!");
-//		if let Ok(projection) = pixel_projection.single() {
-		println!("hey2!");
+		if let Ok(ortho_projection) = pixel_projection.single() {
+			let projection: OrthographicProjection = match ortho_projection {
+				Projection::Orthographic(ortho) => ortho.clone(),
+				_ => OrthographicProjection::default_2d()
+			};
 //			let play_width: f32 =
 //				projection.area.width() as f32 * 0.5;
 //			let play_height: f32 =
 //				projection.area.height() as f32 * 0.5;
 			let real_mouse_x: f32 =
-				((cursor.x - (window.width() * 0.5)) as f32).round();
+				((cursor.x - (window.width() * 0.5)) * projection.scale as f32).round();
 			let real_mouse_y: f32 =
-				-((cursor.y - (window.height() * 0.5)) as f32).round();
-
-//			let w: f32 = projection.area.width();
-//			let h: f32 = projection.area.height();
-//			let s: f32 = projection.scale;
-			let ww: f32 = window.width();
-			let wh: f32 = window.height();
-			let cw: f32 = cursor.x;
-			let ch: f32 = cursor.y;
-//			println!("({w}, {h}), {s}");
-			println!("({ww}, {wh})");
-			println!("({cw}, {ch})");
-//			println!("({play_width}, {play_height}), ({real_mouse_x}, {real_mouse_y})");
+				-((cursor.y - (window.height() * 0.5)) * projection.scale as f32).round();
 
 //			if real_mouse_x <= play_width && real_mouse_y <= play_height {
-				println!("hey3!");
 				let tile_mouse_x: usize =
 					(mob.position.x + (real_mouse_x / 8.0)).round() as usize;
 				let tile_mouse_y: usize =
 					(mob.position.y + (real_mouse_y / 8.0)).round() as usize;
-				println!("({tile_mouse_x}, {tile_mouse_y}))");
 
 				if mouse_keys.just_pressed(MouseButton::Left) {
 				if let Some(clicking_entity) = chunks.tile_at(tile_mouse_x, tile_mouse_y) {
 				if let Ok(clicked_tile) = tiles.get(clicking_entity.1) {
 				if clicked_tile.id == TileIds::AIR {
-					println!("hey4!");
 					update_queue.push((
 						player.selected_block,
 						true,
@@ -656,7 +607,6 @@ fn player_input (
 				if let Some(clicking_entity) = chunks.tile_at(tile_mouse_x, tile_mouse_y) {
 				if let Ok(clicked_tile) = tiles.get(clicking_entity.1) {
 				if clicked_tile.id != TileIds::AIR {
-					println!("hey5!");
 					update_queue.push((
 						TileIds::AIR,
 						true,
@@ -666,7 +616,7 @@ fn player_input (
 					update_tiles.should_update = true;
 				}}}}
 //			}
-		}}//}
+		}}}
 	}
 }
 
@@ -812,8 +762,17 @@ fn setup (
 	mut commands: Commands,
 	asset_server: Res<AssetServer>,
 	mut texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
+	mut settings: ResMut<FramepaceSettings>,
 ) {
-	commands.spawn(Camera2d::default());
+	commands.spawn((
+		Camera2d::default(),
+		Projection::from(OrthographicProjection {
+//			scaling_mode: bevy::camera::ScalingMode::Fixed { width: 720.0, height: 480.0 },
+			scale: 0.5,
+			..OrthographicProjection::default_2d()
+        	})
+	));
+	settings.limiter = Limiter::from_framerate(60.0);
 	/*
 	commands.spawn((
 		TextBundle::from_sections([

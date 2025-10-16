@@ -9,7 +9,8 @@ rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]
 opt-level = 1
 
 [profile.dev.package."*"]
-opt-level = 1
+opt-level = 3
 
 [dependencies]
 bevy = {version = "0.17.x", features = ["dynamic_linking", "trace", "bevy_dev_tools"]}
+bevy_framepace = { git = "https://github.com/aevyrie/bevy_framepace.git", branch = "main", version = "0.20.0-rc.1" }
