@@ -176,7 +176,7 @@ fn update_tiles(
 				};
 
 			transfem.translation.x = current_x as f32 * 8.0;
-			transfem.translation.y = current_y as f32 * 8.0 - 12.0;
+			transfem.translation.y = current_y as f32 * 8.0;
 		}
 	}
 }
@@ -197,7 +197,7 @@ impl TileIds {
 	const STONEBRICK: TileId = 6;
 	const GLASS: TileId = 7;
 	const GLASSPANE: TileId = 8;
-	const BLOCKS: usize = 9;
+	const BLOCKS: TileId = 9;
 
 	#[inline]
 	fn new(tiles: [TileData; Self::BLOCKS]) -> Self {
@@ -455,6 +455,13 @@ fn write_chunk(chunk: (Entity, &Chunk), commands: &mut Commands, tiles: &Query<&
 	let mut saving_to = std::fs::File::create(save_path).unwrap();
 
 	for entity in chunk.1.tiles {
+		if let Ok(found) = tiles.get(entity.0) {
+			match saving_to.write_all(&found.id.to_be_bytes()) {
+				Ok(_) => (),
+				Err(_) => return,//TODO: HANDLE THIS BETTER
+			};
+			commands.entity(entity.0).despawn();
+		}
 		if let Ok(found) = tiles.get(entity.1) {
 			match saving_to.write_all(&found.id.to_be_bytes()) {
 				Ok(_) => (),
@@ -492,14 +499,15 @@ fn read_chunk(
 
 		let tile_entities: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] = 
 		core::array::from_fn( |y| -> [(Entity, Entity); Chunk::WIDTH] {
-		core::array::from_fn( |x| -> (Entity, Entity) {
-			(commands.spawn(
-				tile_ids.make_bundle(tile_data[x + y * Chunk::WIDTH * 2])
-			).id(),
-			commands.spawn(
-				tile_ids.make_bundle(tile_data[x + y * Chunk::WIDTH * 2 + 1])
-			).id())
-		})});
+			core::array::from_fn( |x| -> (Entity, Entity) {
+				(commands.spawn(
+					tile_ids.make_bundle(tile_data[(x + (y * Chunk::WIDTH)) * 2])
+				).id(),
+				commands.spawn(
+					tile_ids.make_bundle(tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1])
+				).id())
+			})
+		});
 
 		Ok(commands.spawn(
 			Chunk::new(
@@ -553,7 +561,7 @@ fn update_camera (
 	if let Ok(mut transfem) = cam.single_mut() {
 		if let Ok((mob, mut player_transfem)) = player.single_mut() {
 			player_transfem.translation.x = mob.position.x * 8.0;
-			player_transfem.translation.y = mob.position.y * 8.0;
+			player_transfem.translation.y = mob.position.y * 8.0 + 12.0;
 			transfem.translation.x = mob.position.x * 8.0;
 			transfem.translation.y = mob.position.y * 8.0;
 		}
@@ -628,7 +636,7 @@ fn player_input (
 				let tile_mouse_x: usize =
 					(mob.position.x + (real_mouse_x / 8.0)).round() as usize;
 				let tile_mouse_y: usize =
-					(mob.position.y + ((real_mouse_y + 12.0) / 8.0)).round() as usize;
+					(mob.position.y + (real_mouse_y / 8.0)).round() as usize;
 				println!("({tile_mouse_x}, {tile_mouse_y}))");
 
 				if mouse_keys.just_pressed(MouseButton::Left) {
