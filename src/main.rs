@@ -241,7 +241,7 @@ struct Mob {
 impl<'a> Default for Mob {
 	fn default() -> Self {
 		Self {
-			position: Vec2::new(100.0, 140.0),
+			position: Vec2::new(0.0, 140.0),
 			velocity: Vec2::new(0.0, 0.0),
 			size: Vec2::new(1.0, 3.0),
 			touching_grass: false,
@@ -382,10 +382,14 @@ trait ChunkQuery {
 
 impl<'w, 's> ChunkQuery for Query<'w, 's, &Chunk> {
 	fn tile_at(&self, absolute_x: isize, absolute_y: isize) -> Option<(Entity, Entity)> {
-		let chunk_x: isize = absolute_x / Chunk::WIDTH as isize;
-		let local_x: usize = absolute_x.cast_unsigned() % Chunk::WIDTH;
-		let chunk_y: isize = absolute_y / Chunk::HEIGHT as isize;
-		let local_y: usize = absolute_y.cast_unsigned() % Chunk::HEIGHT;
+		let (chunk_x, local_x) : (isize, usize) = match absolute_x.is_negative() {
+			true => (((absolute_x) / (Chunk::WIDTH as isize)) - 1, (absolute_x.rem_euclid(Chunk::WIDTH as isize)) as usize),
+			false => (absolute_x / (Chunk::WIDTH as isize), absolute_x.cast_unsigned() % Chunk::WIDTH)
+		};
+		let (chunk_y, local_y) = match absolute_y.is_negative() {
+			true => (((absolute_y+1) / (Chunk::HEIGHT as isize)) - 1, absolute_y.cast_unsigned() % Chunk::HEIGHT),
+			false => (absolute_y / (Chunk::HEIGHT as isize), absolute_y.cast_unsigned() % Chunk::HEIGHT)
+		};
 		for chunk in self {
 			if chunk.x_pos == chunk_x && chunk.y_pos == chunk_y {
 			if let Some(tile) = chunk.at(local_x, local_y) {
@@ -624,10 +628,22 @@ fn do_physics(
 
 		for y in 0..=mob.size.y.trunc() as isize {
 		for x in 0..=mob.size.x.trunc() as isize {
-			let checking_x: isize = x + new_loc.x.trunc() as isize;
-			let checking_y: isize = y + new_loc.y.trunc() as isize;
-			let mob_x: isize = mob.position.x.trunc() as isize + x;
-			let mob_y: isize = mob.position.y.trunc() as isize + y;
+			let checking_x: isize = x + match new_loc.x.is_sign_negative() {
+				true => (new_loc.x - 1.0).trunc() as isize,
+				false => new_loc.x.trunc() as isize
+			};
+			let checking_y: isize = y + match new_loc.y.is_sign_negative() {
+				true => (new_loc.y - 1.0).trunc() as isize,
+				false => new_loc.y.trunc() as isize
+			};
+			let mob_x: isize = x + match mob.position.x.is_sign_negative() {
+				true => (mob.position.x - 1.0).trunc() as isize,
+				false => mob.position.x.trunc() as isize
+			};
+			let mob_y: isize = y + match mob.position.y.is_sign_negative() {
+				true => (mob.position.y - 1.0).trunc() as isize,
+				false => mob.position.y.trunc() as isize
+			};
 
 			if let Some(tile_colliding) = chunks.tile_at(mob_x, checking_y) {
 			if let Ok(tile) = blocks.get(tile_colliding.1) {
@@ -810,7 +826,7 @@ fn init_chunks(
 	mut commands: Commands,
 	tile_ids: Res<TileIds>,
 ) {
-	let chunk_data0: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	let chunk_data1x1: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
 	core::array::from_fn( |_| -> [(Entity, Entity); Chunk::WIDTH] {
 	core::array::from_fn( |_| -> (Entity, Entity) {(
 			commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
@@ -818,12 +834,12 @@ fn init_chunks(
 	)})});
 	commands.spawn(
 		Chunk::new(
-			chunk_data0,
+			chunk_data1x1,
 			1, 1
 		)
 	);
 
-	let chunk_data1: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	let chunk_data2x1: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
 	core::array::from_fn( |_| -> [(Entity, Entity); Chunk::WIDTH] {
 	core::array::from_fn( |_| -> (Entity, Entity) {(
 		commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
@@ -831,12 +847,12 @@ fn init_chunks(
 	)})});
 	commands.spawn(
 		Chunk::new(
-			chunk_data1,
+			chunk_data2x1,
 			2, 1
 		)
 	);
 
-	let chunk_data2: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	let chunk_data3x1: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
 	core::array::from_fn( |_| -> [(Entity, Entity); Chunk::WIDTH] {
 	core::array::from_fn( |_| -> (Entity, Entity) {(
 		commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
@@ -844,12 +860,12 @@ fn init_chunks(
 	)})});
 	commands.spawn(
 		Chunk::new(
-			chunk_data2,
+			chunk_data3x1,
 			3, 1
 		)
 	);
 
-	let chunk_data3: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	let chunk_data1x2: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
 	core::array::from_fn( |y: usize| -> [(Entity, Entity); Chunk::WIDTH] {
 		core::array::from_fn( |_| -> (Entity, Entity) {(
 			commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
@@ -864,7 +880,7 @@ fn init_chunks(
 	});
 	commands.spawn(
 		Chunk::new(
-			chunk_data3,
+			chunk_data1x2,
 			1, 2
 		)
 	);
@@ -886,6 +902,46 @@ fn init_chunks(
 		Chunk::new(
 			chunk_data0x2,
 			0, 2
+		)
+	);
+
+	let chunk_datam1x2: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |y: usize| -> [(Entity, Entity); Chunk::WIDTH] {
+		core::array::from_fn( |_| -> (Entity, Entity) {(
+			commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
+			commands.spawn(
+				tile_ids.make_bundle(
+					match y {
+						0..=8 => TileIds::DIRT,
+						9 => TileIds::GRASS,
+						_ => TileIds::AIR,
+			})).id(),
+		)})
+	});
+	commands.spawn(
+		Chunk::new(
+			chunk_datam1x2,
+			-1, 2
+		)
+	);
+
+	let chunk_datam2x2: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |y: usize| -> [(Entity, Entity); Chunk::WIDTH] {
+		core::array::from_fn( |_| -> (Entity, Entity) {(
+			commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
+			commands.spawn(
+				tile_ids.make_bundle(
+					match y {
+						0..=8 => TileIds::DIRT,
+						9 => TileIds::GRASS,
+						_ => TileIds::AIR,
+			})).id(),
+		)})
+	});
+	commands.spawn(
+		Chunk::new(
+			chunk_datam2x2,
+			-2, 2
 		)
 	);
 
