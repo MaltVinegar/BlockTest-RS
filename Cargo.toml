@@ -1,7 +1,7 @@
 [package]
 name = "bevy-test"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 linker = "/usr/bin/clang"
 rustflags = ["-C", "link-arg=--ld-path=/usr/bin/mold"]
 
