@@ -47,7 +47,7 @@ fn main() {
 
 		.add_systems(Startup, (setup, init_chunks).chain())
 		.add_systems(PreUpdate, (change_tile_sprites, update_tiles).run_if(run_if_tiles_should_update))
-		.add_systems(Update, (fps_update_config, player_input, do_physics, walk_animation, update_camera, debug_input).chain())
+		.add_systems(Update, (fps_update_config, player_input, do_physics, walk_animation, update_camera, debug_input))
 	.run();
 }
 
@@ -58,11 +58,11 @@ struct TilesShouldUpdate {
 
 #[derive(Resource, Default)]
 struct TileChangeQueue {
-	queue: Vec<(TileId, bool, usize, usize)>,
+	queue: Vec<(TileId, bool, isize, isize)>,
 }
 
 impl TileChangeQueue {
-	fn push(&mut self, to_push: (TileId, bool, usize, usize)) {
+	fn push(&mut self, to_push: (TileId, bool, isize, isize)) {
 		self.queue.push(to_push);
 	}
 }
@@ -104,7 +104,7 @@ fn update_tiles(
 ) {
 	should_update.should_update = false;
 	for (entity, block, mut sprite, mut transfem) in &mut tiles {
-		if !tile_ids.by_tile(block).smooths { continue; }
+//		if !tile_ids.by_tile(block).smooths { continue; }
 
 		if let Some((current_x, current_y)) = chunks.find_tile(entity) {
 			sprite.texture_atlas.as_mut().unwrap().index =
@@ -312,8 +312,8 @@ struct Chunk {
 	tiles: [(Entity, Entity); Chunk::SIZE],
 	foreground_map: HashMap<Entity, usize>,
 	background_map: HashMap<Entity, usize>,
-	x_pos: usize,
-	y_pos: usize,
+	x_pos: isize,
+	y_pos: isize,
 }
 
 impl Chunk {
@@ -321,7 +321,7 @@ impl Chunk {
 	const HEIGHT: usize = 64;
 	const SIZE: usize = Self::WIDTH * Self::HEIGHT;
 
-	fn new(tiles: [[(Entity, Entity); Self::WIDTH]; Self::HEIGHT], x_pos: usize, y_pos: usize) -> Self {
+	fn new(tiles: [[(Entity, Entity); Self::WIDTH]; Self::HEIGHT], x_pos: isize, y_pos: isize) -> Self {
 		Self {
 			tiles: core::array::from_fn(
 				|i| tiles[i / Self::HEIGHT][i % Self::WIDTH]
@@ -364,11 +364,11 @@ impl Chunk {
 	}
 
 	#[inline]
-	fn find(&self, to_find: Entity) -> Option<(usize, usize)> {
+	fn find(&self, to_find: Entity) -> Option<(isize, isize)> {
 		match self.foreground_map.get(&to_find) {
-			Some(found) => Some((found % Self::WIDTH, found / Self::HEIGHT)),
+			Some(found) => Some(((found % Self::WIDTH) as isize, (found / Self::HEIGHT) as isize)),
 			None => match self.background_map.get(&to_find) {
-				Some(found) => Some((found % Self::WIDTH, found / Self::HEIGHT)),
+				Some(found) => Some(((found % Self::WIDTH) as isize, (found / Self::HEIGHT) as isize)),
 				None => None
 			}
 		}
@@ -376,16 +376,16 @@ impl Chunk {
 }
 
 trait ChunkQuery {
-	fn tile_at(&self, absolute_x: usize, absolute_y: usize) -> Option<(Entity, Entity)>;
-	fn find_tile(&self, to_find: Entity) -> Option<(usize, usize)>;
+	fn tile_at(&self, absolute_x: isize, absolute_y: isize) -> Option<(Entity, Entity)>;
+	fn find_tile(&self, to_find: Entity) -> Option<(isize, isize)>;
 }
 
 impl<'w, 's> ChunkQuery for Query<'w, 's, &Chunk> {
-	fn tile_at(&self, absolute_x: usize, absolute_y: usize) -> Option<(Entity, Entity)> {
-		let chunk_x: usize = absolute_x / Chunk::WIDTH;
-		let local_x: usize = absolute_x % Chunk::WIDTH;
-		let chunk_y: usize = absolute_y / Chunk::HEIGHT;
-		let local_y: usize = absolute_y % Chunk::HEIGHT;
+	fn tile_at(&self, absolute_x: isize, absolute_y: isize) -> Option<(Entity, Entity)> {
+		let chunk_x: isize = absolute_x / Chunk::WIDTH as isize;
+		let local_x: usize = absolute_x.cast_unsigned() % Chunk::WIDTH;
+		let chunk_y: isize = absolute_y / Chunk::HEIGHT as isize;
+		let local_y: usize = absolute_y.cast_unsigned() % Chunk::HEIGHT;
 		for chunk in self {
 			if chunk.x_pos == chunk_x && chunk.y_pos == chunk_y {
 			if let Some(tile) = chunk.at(local_x, local_y) {
@@ -395,7 +395,7 @@ impl<'w, 's> ChunkQuery for Query<'w, 's, &Chunk> {
 		None
 	}
 
-	fn find_tile(&self, to_find: Entity) -> Option<(usize, usize)> {
+	fn find_tile(&self, to_find: Entity) -> Option<(isize, isize)> {
 		for chunk in self {
 			if let Some((x, y)) = chunk.find(to_find) {
 				return Some((x + chunk.x_pos * 64, y + chunk.y_pos * 64));
@@ -431,8 +431,8 @@ fn write_chunk(
 fn replace_chunk(
 	tile_change_queue: &mut ResMut<TileChangeQueue>,
 	file: std::path::PathBuf,
-	x_pos: usize,
-	y_pos: usize,
+	x_pos: isize,
+	y_pos: isize,
 ) {
 	let mut reading = std::fs::File::open(file).unwrap();
 
@@ -450,15 +450,19 @@ fn replace_chunk(
 
 	for x in 0..=(Chunk::HEIGHT-1) {
 		for y in 0..=(Chunk::WIDTH-1) {
-			tile_change_queue.push((tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1], true, x + x_pos*Chunk::WIDTH, y + y_pos*Chunk::HEIGHT));
+			tile_change_queue.push(
+                                (tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1], true,
+                                (x as isize) + x_pos*(Chunk::WIDTH as isize),
+                                (y as isize) + y_pos*(Chunk::HEIGHT as isize))
+                        );
 		}
 	}
 }
 
 fn find_chunk<'s>(
 	search_through: &'s Query<&Chunk>,
-	x_pos: usize,
-	y_pos: usize
+	x_pos: isize,
+	y_pos: isize
 ) -> Option<&'s Chunk> {
 	for chunk in search_through {
 		if chunk.x_pos == x_pos && chunk.y_pos == y_pos {
@@ -558,10 +562,10 @@ fn player_input (
 				-((cursor.y - (window.height() * 0.5)) * projection.scale as f32).round();
 
 //			if real_mouse_x <= play_width && real_mouse_y <= play_height {
-				let tile_mouse_x: usize =
-					(mob.position.x + (real_mouse_x / 8.0)).round() as usize;
-				let tile_mouse_y: usize =
-					(mob.position.y + (real_mouse_y / 8.0)).round() as usize;
+				let tile_mouse_x: isize =
+					(mob.position.x + (real_mouse_x / 8.0)).round() as isize;
+				let tile_mouse_y: isize =
+					(mob.position.y + (real_mouse_y / 8.0)).round() as isize;
 
 				if mouse_keys.just_pressed(MouseButton::Left) {
 				if let Some(clicking_entity) = chunks.tile_at(tile_mouse_x, tile_mouse_y) {
@@ -618,12 +622,12 @@ fn do_physics(
 		let mut new_loc: Vec2 = mob.position + new_velocity * time.delta_secs();
 		mob.touching_grass = false;
 
-		for y in 0..=mob.size.y.trunc() as usize {
-		for x in 0..=mob.size.x.trunc() as usize {
-			let checking_x: usize = x + new_loc.x.trunc() as usize;
-			let checking_y: usize = y + new_loc.y.trunc() as usize;
-			let mob_x: usize = mob.position.x.trunc() as usize + x;
-			let mob_y: usize = mob.position.y.trunc() as usize + y;
+		for y in 0..=mob.size.y.trunc() as isize {
+		for x in 0..=mob.size.x.trunc() as isize {
+			let checking_x: isize = x + new_loc.x.trunc() as isize;
+			let checking_y: isize = y + new_loc.y.trunc() as isize;
+			let mob_x: isize = mob.position.x.trunc() as isize + x;
+			let mob_y: isize = mob.position.y.trunc() as isize + y;
 
 			if let Some(tile_colliding) = chunks.tile_at(mob_x, checking_y) {
 			if let Ok(tile) = blocks.get(tile_colliding.1) {
@@ -862,6 +866,26 @@ fn init_chunks(
 		Chunk::new(
 			chunk_data3,
 			1, 2
+		)
+	);
+
+	let chunk_data0x2: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	core::array::from_fn( |y: usize| -> [(Entity, Entity); Chunk::WIDTH] {
+		core::array::from_fn( |_| -> (Entity, Entity) {(
+			commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
+			commands.spawn(
+				tile_ids.make_bundle(
+					match y {
+						0..=9 => TileIds::DIRT,
+						10 => TileIds::GRASS,
+						_ => TileIds::AIR,
+			})).id(),
+		)})
+	});
+	commands.spawn(
+		Chunk::new(
+			chunk_data0x2,
+			0, 2
 		)
 	);
 
