@@ -57,6 +57,7 @@ fn main() {
 struct ChunkPosition(I64Vec2);
 
 impl ChunkPosition {
+	#[inline]
 	fn new(x: i64, y: i64) -> Self { ChunkPosition { 0: I64Vec2::new(x, y) } }
 }
 
@@ -64,9 +65,13 @@ impl ChunkPosition {
 struct ChunkRelativePosition(U64Vec2);
 
 impl ChunkRelativePosition {
+	#[inline]
 	fn new(x: u64, y: u64) -> Self { ChunkRelativePosition { 0: U64Vec2::new(x, y) } }
+	#[inline]
 	fn from_flat(i: &u64) -> Self { ChunkRelativePosition { 0: U64Vec2::new(i % Chunk::WIDTH_U64, i / Chunk::HEIGHT_U64) } }
+	#[inline]
 	fn to_flat(&self) -> usize { (self.0.x + self.0.y * Chunk::WIDTH_U64) as usize }
+	#[inline]
 	fn is_in_chunk(&self) -> bool { self.0.x < Chunk::WIDTH_U64 && self.0.y < Chunk::HEIGHT_U64 }
 }
 
@@ -74,33 +79,21 @@ impl ChunkRelativePosition {
 struct TileAbsolutePosition(I64Vec2);
 
 impl TileAbsolutePosition {
+	#[inline]
 	fn new(x: i64, y: i64) -> Self { TileAbsolutePosition { 0: I64Vec2::new(x, y) } }
 
-	fn to_positions(&self) -> (ChunkPosition, ChunkRelativePosition) {
-		(
-			ChunkPosition::new(
-				match self.0.x.is_negative() {
-					true => ((self.0.x+1) / Chunk::WIDTH_I64) - 1,
-					false => self.0.x / Chunk::WIDTH_I64
-				},
-				match self.0.y.is_negative() {
-					true => ((self.0.y+1) / Chunk::HEIGHT_I64) - 1,
-					false => self.0.y / Chunk::HEIGHT_I64
-				}
-			),
-			ChunkRelativePosition::new(
-				self.0.x.cast_unsigned() % Chunk::WIDTH_U64, self.0.y.cast_unsigned() % Chunk::HEIGHT_U64
-			)
-		)
-	}
+	#[inline]
+	fn to_positions(&self) -> (ChunkPosition, ChunkRelativePosition) {(
+		ChunkPosition::new(self.0.x.wrapping_div_euclid(Chunk::WIDTH_I64),self.0.y.wrapping_div_euclid(Chunk::HEIGHT_I64)),
+		ChunkRelativePosition::new(self.0.x.wrapping_rem_euclid(Chunk::WIDTH_I64) as u64, self.0.y.wrapping_rem_euclid(Chunk::HEIGHT_I64) as u64)
+	)}
 }
 
 impl Add<(i64, i64)> for TileAbsolutePosition {
 	type Output = Self;
 
-	fn add(self, other: (i64, i64)) -> Self {
-		Self { 0: I64Vec2::new(self.0.x + other.0, self.0.y + other.1) }
-	}
+	#[inline]
+	fn add(self, other: (i64, i64)) -> Self { Self { 0: I64Vec2::new(self.0.x + other.0, self.0.y + other.1) } }
 }
 
 trait ToTileAbsolutePosition {
@@ -108,6 +101,7 @@ trait ToTileAbsolutePosition {
 }
 
 impl ToTileAbsolutePosition for (ChunkPosition, ChunkRelativePosition) {
+	#[inline]
 	fn to_tile_absolute_position(&self) -> TileAbsolutePosition {
 		let (chunk_pos, chunk_rel_pos) = self;
 		TileAbsolutePosition::new((chunk_rel_pos.0.x as i64) + chunk_pos.0.x * 64, (chunk_rel_pos.0.y as i64) + chunk_pos.0.y * 64)
@@ -125,9 +119,10 @@ struct TileChangeQueue {
 }
 
 impl TileChangeQueue {
-	fn push(&mut self, to_push: (TileId, bool, TileAbsolutePosition)) {
-		self.queue.push(to_push);
-	}
+	#[inline]
+	fn push(&mut self, to_push: (TileId, bool, TileAbsolutePosition)) { self.queue.push(to_push); }
+	#[inline]
+	fn clear(&mut self) { self.queue.clear(); }
 }
 
 fn run_if_tiles_should_update(
@@ -155,7 +150,7 @@ fn change_tile_sprites(
 			sprite.texture_atlas.as_mut().unwrap().index = 0;
 		}}
 	}
-	to_change.queue.clear();
+	to_change.clear();
 }
 
 fn update_tiles(
@@ -237,21 +232,13 @@ impl TileIds {
 	const BLOCKS: TileId = 9;
 
 	#[inline]
-	fn new(tiles: [TileData; Self::BLOCKS]) -> Self {
-		Self {
-			tiles: tiles
-		}
-	}
+	fn new(tiles: [TileData; Self::BLOCKS]) -> Self { Self { tiles: tiles } }
 
 	#[inline]
-	fn by_id(&self, id: TileId) -> &TileData {
-		&self.tiles[id]
-	}
+	fn by_id(&self, id: TileId) -> &TileData { &self.tiles[id] }
 
 	#[inline]
-	fn by_tile(&self, tile: &Tile) -> &TileData {
-		&self.tiles[tile.id]
-	}
+	fn by_tile(&self, tile: &Tile) -> &TileData { &self.tiles[tile.id] }
 
 	#[inline]
 	fn make_texture(&self, id: TileId) -> Sprite {
@@ -266,9 +253,7 @@ impl TileIds {
 	}
 
 	#[inline]
-	fn make_tile(&self, id: TileId) -> Tile {
-		Tile {id: id}
-	}
+	fn make_tile(&self, id: TileId) -> Tile { Tile {id: id} }
 
 	#[inline]
 	fn make_bundle(&self, id: TileId) -> (Tile, Sprite, Transform) {(
@@ -302,6 +287,7 @@ struct Mob {
 }
 
 impl<'a> Default for Mob {
+	#[inline]
 	fn default() -> Self {
 		Self {
 			position: Vec2::new(0.0, 140.0),
@@ -320,6 +306,7 @@ struct Player {
 }
 
 impl<'a> Default for Player {
+	#[inline]
 	fn default() -> Self {
 		Player {
 			selected_block: TileIds::DIRT
@@ -335,6 +322,7 @@ struct PlayerAnimation {
 }
 
 impl<'a> Default for PlayerAnimation {
+	#[inline]
 	fn default() -> Self {
 		Self {
 			idle_frame: 0,
@@ -411,7 +399,6 @@ impl Chunk {
 		}
 	}
 
-	#[inline]
 	fn update_hashmap(mut self) -> Self {
 		self.foreground_map = 
 			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, u64> {
@@ -432,7 +419,6 @@ impl Chunk {
 		return self;
 	}
 
-	#[inline]
 	fn find(&self, to_find: Entity) -> Option<ChunkRelativePosition> {
 		match self.foreground_map.get(&to_find) {
 			Some(found) => Some(ChunkRelativePosition::from_flat(found)),
@@ -545,17 +531,17 @@ fn debug_input(
 	chunks: Query<&Chunk>,
 	tiles: Query<&Tile>,
 ) {
-	if let Some(chunk) = find_chunk(&chunks, ChunkPosition::new(1, 2)) {
+	if let Some(chunk) = find_chunk(&chunks, ChunkPosition::new(-1, 2)) {
 		if keys.just_pressed(KeyCode::KeyR) {
 			let mut write_path = std::env::current_dir().unwrap();
 			write_path.push("save");
-			write_path.push(format!("{}-{}.chunk", 1, 2));
+			write_path.push(format!("{}-{}.chunk", -1, 2));
 			write_chunk(&chunk, &tiles, write_path);
 		} else if keys.just_pressed(KeyCode::KeyT) {
 			let mut read_path = std::env::current_dir().unwrap();
 			read_path.push("save");
-			read_path.push(format!("{}-{}.chunk", 1, 2));
-			replace_chunk(&mut tile_update_queue, read_path, ChunkPosition::new(1, 2));
+			read_path.push(format!("{}-{}.chunk", -1, 2));
+			replace_chunk(&mut tile_update_queue, read_path, ChunkPosition::new(-1, 2));
 			update_tiles.should_update = true;
 		}
 	}
@@ -972,8 +958,8 @@ fn init_chunks(
 			commands.spawn(
 				tile_ids.make_bundle(
 					match y {
-						0..=8 => TileIds::DIRT,
-						9 => TileIds::GRASS,
+						0..=11 => TileIds::DIRT,
+						12 => TileIds::GRASS,
 						_ => TileIds::AIR,
 			})).id(),
 		)})
