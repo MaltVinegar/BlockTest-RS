@@ -1,12 +1,14 @@
 
 use std::io::prelude::*;
+use std::collections::HashMap;
+use std::ops::Add;
 
 use bevy:: {
 	prelude::*,
 	dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTimeGraphConfig},
 	text::FontSmoothing,
+	math::*,
 };
-use std::collections::HashMap;
 use bevy_framepace::*;
 
 #[allow(unused)]
@@ -51,6 +53,67 @@ fn main() {
 	.run();
 }
 
+#[derive(Copy, Clone, PartialEq)]
+struct ChunkPosition(I64Vec2);
+
+impl ChunkPosition {
+	fn new(x: i64, y: i64) -> Self { ChunkPosition { 0: I64Vec2::new(x, y) } }
+}
+
+#[derive(Copy, Clone, PartialEq)]
+struct ChunkRelativePosition(U64Vec2);
+
+impl ChunkRelativePosition {
+	fn new(x: u64, y: u64) -> Self { ChunkRelativePosition { 0: U64Vec2::new(x, y) } }
+	fn from_flat(i: &u64) -> Self { ChunkRelativePosition { 0: U64Vec2::new(i % Chunk::WIDTH_U64, i / Chunk::HEIGHT_U64) } }
+	fn to_flat(&self) -> usize { (self.0.x + self.0.y * Chunk::WIDTH_U64) as usize }
+	fn is_in_chunk(&self) -> bool { self.0.x < Chunk::WIDTH_U64 && self.0.y < Chunk::HEIGHT_U64 }
+}
+
+#[derive(Copy, Clone, PartialEq)]
+struct TileAbsolutePosition(I64Vec2);
+
+impl TileAbsolutePosition {
+	fn new(x: i64, y: i64) -> Self { TileAbsolutePosition { 0: I64Vec2::new(x, y) } }
+
+	fn to_positions(&self) -> (ChunkPosition, ChunkRelativePosition) {
+		(
+			ChunkPosition::new(
+				match self.0.x.is_negative() {
+					true => ((self.0.x+1) / Chunk::WIDTH_I64) - 1,
+					false => self.0.x / Chunk::WIDTH_I64
+				},
+				match self.0.y.is_negative() {
+					true => ((self.0.y+1) / Chunk::HEIGHT_I64) - 1,
+					false => self.0.y / Chunk::HEIGHT_I64
+				}
+			),
+			ChunkRelativePosition::new(
+				self.0.x.cast_unsigned() % Chunk::WIDTH_U64, self.0.y.cast_unsigned() % Chunk::HEIGHT_U64
+			)
+		)
+	}
+}
+
+impl Add<(i64, i64)> for TileAbsolutePosition {
+	type Output = Self;
+
+	fn add(self, other: (i64, i64)) -> Self {
+		Self { 0: I64Vec2::new(self.0.x + other.0, self.0.y + other.1) }
+	}
+}
+
+trait ToTileAbsolutePosition {
+	fn to_tile_absolute_position(&self) -> TileAbsolutePosition;
+}
+
+impl ToTileAbsolutePosition for (ChunkPosition, ChunkRelativePosition) {
+	fn to_tile_absolute_position(&self) -> TileAbsolutePosition {
+		let (chunk_pos, chunk_rel_pos) = self;
+		TileAbsolutePosition::new((chunk_rel_pos.0.x as i64) + chunk_pos.0.x * 64, (chunk_rel_pos.0.y as i64) + chunk_pos.0.y * 64)
+	}
+}
+
 #[derive(Resource)]
 struct TilesShouldUpdate {
 	should_update: bool,
@@ -58,11 +121,11 @@ struct TilesShouldUpdate {
 
 #[derive(Resource, Default)]
 struct TileChangeQueue {
-	queue: Vec<(TileId, bool, isize, isize)>,
+	queue: Vec<(TileId, bool, TileAbsolutePosition)>,
 }
 
 impl TileChangeQueue {
-	fn push(&mut self, to_push: (TileId, bool, isize, isize)) {
+	fn push(&mut self, to_push: (TileId, bool, TileAbsolutePosition)) {
 		self.queue.push(to_push);
 	}
 }
@@ -83,8 +146,8 @@ fn change_tile_sprites(
 	mut tiles: Query<(&mut Tile, &mut Sprite)>,
 	chunks: Query<&Chunk>,
 ) {
-	for (change_to, _, x_pos, y_pos) in &to_change.queue {
-		if let Some(entity) = chunks.tile_at(*x_pos, *y_pos) {
+	for (change_to, _, pos) in &to_change.queue {
+		if let Some(entity) = chunks.tile_at(*pos) {
 		if let Ok((mut tile, mut sprite)) = tiles.get_mut(entity.1) {
 			tile.id = *change_to;
 			sprite.texture_atlas.as_mut().unwrap().layout = tile_ids.by_id(*change_to).texture.0.clone();
@@ -100,15 +163,15 @@ fn update_tiles(
 	chunks: Query<&Chunk>,
 	check: Query<&Tile>,
 	mut should_update: ResMut<TilesShouldUpdate>,
-	mut tiles: Query<(Entity, &Tile, &mut Sprite, &mut Transform)>,
+	mut tiles: Query<(Entity, &mut Sprite, &mut Transform), With<Tile>>,
 ) {
 	should_update.should_update = false;
-	for (entity, block, mut sprite, mut transfem) in &mut tiles {
+	for (entity, mut sprite, mut transfem) in &mut tiles {
 //		if !tile_ids.by_tile(block).smooths { continue; }
 
-		if let Some((current_x, current_y)) = chunks.find_tile(entity) {
+		if let Some(current_pos) = chunks.find_tile(entity) {
 			sprite.texture_atlas.as_mut().unwrap().index =
-				match chunks.tile_at(current_x, current_y + 1) {
+				match chunks.tile_at(current_pos + (0, 1)) {
 					Some(checking) =>
 					match check.get(checking.1) {
 						Ok(tile) => match tile_ids.by_tile(tile).smooths {
@@ -118,7 +181,7 @@ fn update_tiles(
 						_ => 0,
 					},  _ => 0,
 				} |
-				match chunks.tile_at(current_x, current_y - 1) {
+				match chunks.tile_at(current_pos + (0, -1)) {
 					Some(checking) =>
 					match check.get(checking.1) {
 						Ok(tile) => match tile_ids.by_tile(tile).smooths {
@@ -128,7 +191,7 @@ fn update_tiles(
 						_ => 0,
 					},  _ => 0,
 				} |
-				match chunks.tile_at(current_x + 1, current_y) {
+				match chunks.tile_at(current_pos + (1, 0)) {
 					Some(checking) =>
 					match check.get(checking.1) {
 						Ok(tile) => match tile_ids.by_tile(tile).smooths {
@@ -138,7 +201,7 @@ fn update_tiles(
 						_ => 0,
 					},  _ => 0,
 				} |
-				match chunks.tile_at(current_x - 1, current_y) {
+				match chunks.tile_at(current_pos + (-1, 0)) {
 					Some(checking) =>
 					match check.get(checking.1) {
 						Ok(tile) => match tile_ids.by_tile(tile).smooths {
@@ -149,8 +212,8 @@ fn update_tiles(
 					},  _ => 0,
 				};
 
-			transfem.translation.x = current_x as f32 * 8.0;
-			transfem.translation.y = current_y as f32 * 8.0;
+			transfem.translation.x = current_pos.0.x as f32 * 8.0;
+			transfem.translation.y = current_pos.0.y as f32 * 8.0;
 		}
 	}
 }
@@ -310,10 +373,9 @@ impl TileData {
 #[derive(Component)]
 struct Chunk {
 	tiles: [(Entity, Entity); Chunk::SIZE],
-	foreground_map: HashMap<Entity, usize>,
-	background_map: HashMap<Entity, usize>,
-	x_pos: isize,
-	y_pos: isize,
+	foreground_map: HashMap<Entity, u64>,
+	background_map: HashMap<Entity, u64>,
+	pos: ChunkPosition,
 }
 
 impl Chunk {
@@ -321,23 +383,30 @@ impl Chunk {
 	const HEIGHT: usize = 64;
 	const SIZE: usize = Self::WIDTH * Self::HEIGHT;
 
-	fn new(tiles: [[(Entity, Entity); Self::WIDTH]; Self::HEIGHT], x_pos: isize, y_pos: isize) -> Self {
+	const WIDTH_U64: u64 = Self::WIDTH as u64;
+	const HEIGHT_U64: u64 = Self::HEIGHT as u64;
+	const SIZE_U64: u64 = Self::SIZE as u64;
+
+	const WIDTH_I64: i64 = Self::WIDTH as i64;
+	const HEIGHT_I64: i64 = Self::HEIGHT as i64;
+	const SIZE_I64: i64 = Self::SIZE as i64;
+
+	fn new(tiles: [[(Entity, Entity); Self::WIDTH]; Self::HEIGHT], x_pos: i64, y_pos: i64) -> Self {
 		Self {
 			tiles: core::array::from_fn(
 				|i| tiles[i / Self::HEIGHT][i % Self::WIDTH]
 			),
 			foreground_map: HashMap::new(),
 			background_map: HashMap::new(),
-			x_pos,
-			y_pos,
+			pos: ChunkPosition::new(x_pos, y_pos)
 		}.update_hashmap()
 	}
 
 	#[inline]
-	fn at(&self, x: usize, y: usize) -> Option<(Entity, Entity)> {
+	fn at(&self, pos: ChunkRelativePosition) -> Option<(Entity, Entity)> {
 	#[allow(unused_parens)]
-		match (x < Self::WIDTH && y < Self::HEIGHT) {
-			true => Some(self.tiles[x + y * Self::WIDTH]),
+		match (pos.is_in_chunk()) {
+			true => Some(self.tiles[pos.to_flat()]),
 			false => None,
 		}
 	}
@@ -345,18 +414,18 @@ impl Chunk {
 	#[inline]
 	fn update_hashmap(mut self) -> Self {
 		self.foreground_map = 
-			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, usize> {
-				let mut rv: HashMap<Entity, usize> = HashMap::<Entity, usize>::new();
+			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, u64> {
+				let mut rv: HashMap<Entity, u64> = HashMap::<Entity, u64>::new();
 				for i in 0..tiles.len() {
-					rv.insert(tiles[i].1, i);
+					rv.insert(tiles[i].1, i as u64);
 				}
 				rv
 			}(&self.tiles);
 		self.background_map = 
-			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, usize> {
-				let mut rv: HashMap<Entity, usize> = HashMap::<Entity, usize>::new();
+			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, u64> {
+				let mut rv: HashMap<Entity, u64> = HashMap::<Entity, u64>::new();
 				for i in 0..tiles.len() {
-					rv.insert(tiles[i].0, i);
+					rv.insert(tiles[i].0, i as u64);
 				}
 				rv
 			}(&self.tiles);
@@ -364,11 +433,11 @@ impl Chunk {
 	}
 
 	#[inline]
-	fn find(&self, to_find: Entity) -> Option<(isize, isize)> {
+	fn find(&self, to_find: Entity) -> Option<ChunkRelativePosition> {
 		match self.foreground_map.get(&to_find) {
-			Some(found) => Some(((found % Self::WIDTH) as isize, (found / Self::HEIGHT) as isize)),
+			Some(found) => Some(ChunkRelativePosition::from_flat(found)),
 			None => match self.background_map.get(&to_find) {
-				Some(found) => Some(((found % Self::WIDTH) as isize, (found / Self::HEIGHT) as isize)),
+				Some(found) => Some(ChunkRelativePosition::from_flat(found)),
 				None => None
 			}
 		}
@@ -376,33 +445,28 @@ impl Chunk {
 }
 
 trait ChunkQuery {
-	fn tile_at(&self, absolute_x: isize, absolute_y: isize) -> Option<(Entity, Entity)>;
-	fn find_tile(&self, to_find: Entity) -> Option<(isize, isize)>;
+	fn tile_at(&self, pos: TileAbsolutePosition) -> Option<(Entity, Entity)>;
+	fn find_tile(&self, to_find: Entity) -> Option<TileAbsolutePosition>;
 }
 
 impl<'w, 's> ChunkQuery for Query<'w, 's, &Chunk> {
-	fn tile_at(&self, absolute_x: isize, absolute_y: isize) -> Option<(Entity, Entity)> {
-		let (chunk_x, local_x) : (isize, usize) = match absolute_x.is_negative() {
-			true => (((absolute_x) / (Chunk::WIDTH as isize)) - 1, (absolute_x.rem_euclid(Chunk::WIDTH as isize)) as usize),
-			false => (absolute_x / (Chunk::WIDTH as isize), absolute_x.cast_unsigned() % Chunk::WIDTH)
-		};
-		let (chunk_y, local_y) = match absolute_y.is_negative() {
-			true => (((absolute_y+1) / (Chunk::HEIGHT as isize)) - 1, absolute_y.cast_unsigned() % Chunk::HEIGHT),
-			false => (absolute_y / (Chunk::HEIGHT as isize), absolute_y.cast_unsigned() % Chunk::HEIGHT)
-		};
+	fn tile_at(&self, pos: TileAbsolutePosition) -> Option<(Entity, Entity)> {
+		let (chunk_pos, local_pos) = pos.to_positions();
+
 		for chunk in self {
-			if chunk.x_pos == chunk_x && chunk.y_pos == chunk_y {
-			if let Some(tile) = chunk.at(local_x, local_y) {
-				return Some(tile);
-			}}
+			if chunk.pos == chunk_pos {
+				if let Some(tile) = chunk.at(local_pos) {
+					return Some(tile);
+				}
+			}
 		}
 		None
 	}
 
-	fn find_tile(&self, to_find: Entity) -> Option<(isize, isize)> {
+	fn find_tile(&self, to_find: Entity) -> Option<TileAbsolutePosition> {
 		for chunk in self {
-			if let Some((x, y)) = chunk.find(to_find) {
-				return Some((x + chunk.x_pos * 64, y + chunk.y_pos * 64));
+			if let Some(pos) = chunk.find(to_find) {
+				return Some((chunk.pos, pos).to_tile_absolute_position());
 			}
 		}
 		None
@@ -435,8 +499,7 @@ fn write_chunk(
 fn replace_chunk(
 	tile_change_queue: &mut ResMut<TileChangeQueue>,
 	file: std::path::PathBuf,
-	x_pos: isize,
-	y_pos: isize,
+	pos: ChunkPosition,
 ) {
 	let mut reading = std::fs::File::open(file).unwrap();
 
@@ -456,8 +519,8 @@ fn replace_chunk(
 		for y in 0..=(Chunk::WIDTH-1) {
 			tile_change_queue.push(
                                 (tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1], true,
-                                (x as isize) + x_pos*(Chunk::WIDTH as isize),
-                                (y as isize) + y_pos*(Chunk::HEIGHT as isize))
+					(pos, ChunkRelativePosition::new(x as u64, y as u64)).to_tile_absolute_position()
+				)
                         );
 		}
 	}
@@ -465,11 +528,10 @@ fn replace_chunk(
 
 fn find_chunk<'s>(
 	search_through: &'s Query<&Chunk>,
-	x_pos: isize,
-	y_pos: isize
+	pos: ChunkPosition,
 ) -> Option<&'s Chunk> {
 	for chunk in search_through {
-		if chunk.x_pos == x_pos && chunk.y_pos == y_pos {
+		if chunk.pos == pos {
 			return Some(chunk);
 		}
 	}
@@ -483,17 +545,17 @@ fn debug_input(
 	chunks: Query<&Chunk>,
 	tiles: Query<&Tile>,
 ) {
-	if let Some(chunk) = find_chunk(&chunks, 3, 2) {
+	if let Some(chunk) = find_chunk(&chunks, ChunkPosition::new(1, 2)) {
 		if keys.just_pressed(KeyCode::KeyR) {
 			let mut write_path = std::env::current_dir().unwrap();
 			write_path.push("save");
-			write_path.push(format!("{}-{}.chunk", 3, 2));
+			write_path.push(format!("{}-{}.chunk", 1, 2));
 			write_chunk(&chunk, &tiles, write_path);
 		} else if keys.just_pressed(KeyCode::KeyT) {
 			let mut read_path = std::env::current_dir().unwrap();
 			read_path.push("save");
-			read_path.push(format!("{}-{}.chunk", 3, 2));
-			replace_chunk(&mut tile_update_queue, read_path, 3, 2);
+			read_path.push(format!("{}-{}.chunk", 1, 2));
+			replace_chunk(&mut tile_update_queue, read_path, ChunkPosition::new(1, 2));
 			update_tiles.should_update = true;
 		}
 	}
@@ -566,32 +628,30 @@ fn player_input (
 				-((cursor.y - (window.height() * 0.5)) * projection.scale as f32).round();
 
 //			if real_mouse_x <= play_width && real_mouse_y <= play_height {
-				let tile_mouse_x: isize =
-					(mob.position.x + (real_mouse_x / 8.0)).round() as isize;
-				let tile_mouse_y: isize =
-					(mob.position.y + (real_mouse_y / 8.0)).round() as isize;
+				let tile_mouse_position: TileAbsolutePosition = TileAbsolutePosition::new(
+					(mob.position.x + (real_mouse_x / 8.0)).round() as i64,
+					(mob.position.y + (real_mouse_y / 8.0)).round() as i64
+				);
 
 				if mouse_keys.just_pressed(MouseButton::Left) {
-				if let Some(clicking_entity) = chunks.tile_at(tile_mouse_x, tile_mouse_y) {
+				if let Some(clicking_entity) = chunks.tile_at(tile_mouse_position) {
 				if let Ok(clicked_tile) = tiles.get(clicking_entity.1) {
 				if clicked_tile.id == TileIds::AIR {
 					update_queue.push((
 						player.selected_block,
 						true,
-						tile_mouse_x,
-						tile_mouse_y
+						tile_mouse_position
 					));
 					update_tiles.should_update = true;
 				}}}}
 				if mouse_keys.just_pressed(MouseButton::Right) {
-				if let Some(clicking_entity) = chunks.tile_at(tile_mouse_x, tile_mouse_y) {
+				if let Some(clicking_entity) = chunks.tile_at(tile_mouse_position) {
 				if let Ok(clicked_tile) = tiles.get(clicking_entity.1) {
 				if clicked_tile.id != TileIds::AIR {
 					update_queue.push((
 						TileIds::AIR,
 						true,
-						tile_mouse_x,
-						tile_mouse_y
+						tile_mouse_position
 					));
 					update_tiles.should_update = true;
 				}}}}
@@ -626,26 +686,26 @@ fn do_physics(
 		let mut new_loc: Vec2 = mob.position + new_velocity * time.delta_secs();
 		mob.touching_grass = false;
 
-		for y in 0..=mob.size.y.trunc() as isize {
-		for x in 0..=mob.size.x.trunc() as isize {
-			let checking_x: isize = x + match new_loc.x.is_sign_negative() {
-				true => (new_loc.x - 1.0).trunc() as isize,
-				false => new_loc.x.trunc() as isize
+		for y in 0..=mob.size.y.trunc() as i64 {
+		for x in 0..=mob.size.x.trunc() as i64 {
+			let checking_x: i64 = x + match new_loc.x.is_sign_negative() {
+				true => (new_loc.x - 1.0).trunc() as i64,
+				false => new_loc.x.trunc() as i64
 			};
-			let checking_y: isize = y + match new_loc.y.is_sign_negative() {
-				true => (new_loc.y - 1.0).trunc() as isize,
-				false => new_loc.y.trunc() as isize
+			let checking_y: i64 = y + match new_loc.y.is_sign_negative() {
+				true => (new_loc.y - 1.0).trunc() as i64,
+				false => new_loc.y.trunc() as i64
 			};
-			let mob_x: isize = x + match mob.position.x.is_sign_negative() {
-				true => (mob.position.x - 1.0).trunc() as isize,
-				false => mob.position.x.trunc() as isize
+			let mob_x: i64 = x + match mob.position.x.is_sign_negative() {
+				true => (mob.position.x - 1.0).trunc() as i64,
+				false => mob.position.x.trunc() as i64
 			};
-			let mob_y: isize = y + match mob.position.y.is_sign_negative() {
-				true => (mob.position.y - 1.0).trunc() as isize,
-				false => mob.position.y.trunc() as isize
+			let mob_y: i64 = y + match mob.position.y.is_sign_negative() {
+				true => (mob.position.y - 1.0).trunc() as i64,
+				false => mob.position.y.trunc() as i64
 			};
 
-			if let Some(tile_colliding) = chunks.tile_at(mob_x, checking_y) {
+			if let Some(tile_colliding) = chunks.tile_at(TileAbsolutePosition::new(mob_x, checking_y)) {
 			if let Ok(tile) = blocks.get(tile_colliding.1) {
 			if tile_ids.by_tile(tile).solid {
 				new_velocity.y = 0.0;
@@ -653,13 +713,13 @@ fn do_physics(
 				new_velocity.x -= new_velocity.x * 10.0 * time.delta_secs();
 				mob.touching_grass = true;
 			}}}
-			if let Some(tile_colliding) = chunks.tile_at(checking_x, mob_y) {
+			if let Some(tile_colliding) = chunks.tile_at(TileAbsolutePosition::new(checking_x, mob_y)) {
 			if let Ok(tile) = blocks.get(tile_colliding.1) {
 			if tile_ids.by_tile(tile).solid {
 				new_velocity.x = 0.0;
 				new_loc.x = mob.position.x;
 			}}}
-			else if let Some(tile_colliding) = chunks.tile_at(checking_x, checking_y) {
+			else if let Some(tile_colliding) = chunks.tile_at(TileAbsolutePosition::new(checking_x, checking_y)) {
 			if let Ok(tile) = blocks.get(tile_colliding.1) {
 			if tile_ids.by_tile(tile).solid {
 				new_velocity.x = 0.0;
