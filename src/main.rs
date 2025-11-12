@@ -62,17 +62,17 @@ impl ChunkPosition {
 }
 
 #[derive(Copy, Clone, PartialEq)]
-struct ChunkRelativePosition(U64Vec2);
+struct ChunkRelativePosition(I64Vec2);
 
 impl ChunkRelativePosition {
 	#[inline]
-	fn new(x: u64, y: u64) -> Self { ChunkRelativePosition { 0: U64Vec2::new(x, y) } }
+	fn new(x: i64, y: i64) -> Self { ChunkRelativePosition { 0: I64Vec2::new(x, y) } }
 	#[inline]
-	fn from_flat(i: &u64) -> Self { ChunkRelativePosition { 0: U64Vec2::new(i % Chunk::WIDTH_U64, i / Chunk::HEIGHT_U64) } }
+	fn from_flat(i: &i64) -> Self { ChunkRelativePosition { 0: I64Vec2::new(i % Chunk::WIDTH_I64, i / Chunk::HEIGHT_I64) } }
 	#[inline]
-	fn to_flat(&self) -> usize { (self.0.x + self.0.y * Chunk::WIDTH_U64) as usize }
+	fn to_flat(&self) -> usize { (self.0.x + self.0.y * Chunk::WIDTH_I64) as usize }
 	#[inline]
-	fn is_in_chunk(&self) -> bool { self.0.x < Chunk::WIDTH_U64 && self.0.y < Chunk::HEIGHT_U64 }
+	fn is_in_chunk(&self) -> bool { self.0.x < Chunk::WIDTH_I64 && self.0.y < Chunk::HEIGHT_I64 }
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -84,8 +84,8 @@ impl TileAbsolutePosition {
 
 	#[inline]
 	fn to_positions(&self) -> (ChunkPosition, ChunkRelativePosition) {(
-		ChunkPosition::new(self.0.x.wrapping_div_euclid(Chunk::WIDTH_I64),self.0.y.wrapping_div_euclid(Chunk::HEIGHT_I64)),
-		ChunkRelativePosition::new(self.0.x.wrapping_rem_euclid(Chunk::WIDTH_I64) as u64, self.0.y.wrapping_rem_euclid(Chunk::HEIGHT_I64) as u64)
+		ChunkPosition::new(self.0.x.wrapping_div_euclid(Chunk::WIDTH_I64), self.0.y.wrapping_div_euclid(Chunk::HEIGHT_I64)),
+		ChunkRelativePosition::new(self.0.x.wrapping_rem_euclid(Chunk::WIDTH_I64), self.0.y.wrapping_rem_euclid(Chunk::HEIGHT_I64))
 	)}
 }
 
@@ -104,7 +104,7 @@ impl ToTileAbsolutePosition for (ChunkPosition, ChunkRelativePosition) {
 	#[inline]
 	fn to_tile_absolute_position(&self) -> TileAbsolutePosition {
 		let (chunk_pos, chunk_rel_pos) = self;
-		TileAbsolutePosition::new((chunk_rel_pos.0.x as i64) + chunk_pos.0.x * 64, (chunk_rel_pos.0.y as i64) + chunk_pos.0.y * 64)
+		TileAbsolutePosition::new(chunk_rel_pos.0.x + chunk_pos.0.x * Chunk::WIDTH_I64, chunk_rel_pos.0.y + chunk_pos.0.y * Chunk::HEIGHT_I64)
 	}
 }
 
@@ -361,8 +361,8 @@ impl TileData {
 #[derive(Component)]
 struct Chunk {
 	tiles: [(Entity, Entity); Chunk::SIZE],
-	foreground_map: HashMap<Entity, u64>,
-	background_map: HashMap<Entity, u64>,
+	foreground_map: HashMap<Entity, i64>,
+	background_map: HashMap<Entity, i64>,
 	pos: ChunkPosition,
 }
 
@@ -392,8 +392,7 @@ impl Chunk {
 
 	#[inline]
 	fn at(&self, pos: ChunkRelativePosition) -> Option<(Entity, Entity)> {
-	#[allow(unused_parens)]
-		match (pos.is_in_chunk()) {
+		match pos.is_in_chunk() {
 			true => Some(self.tiles[pos.to_flat()]),
 			false => None,
 		}
@@ -401,18 +400,18 @@ impl Chunk {
 
 	fn update_hashmap(mut self) -> Self {
 		self.foreground_map = 
-			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, u64> {
-				let mut rv: HashMap<Entity, u64> = HashMap::<Entity, u64>::new();
+			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, i64> {
+				let mut rv: HashMap<Entity, i64> = HashMap::<Entity, i64>::new();
 				for i in 0..tiles.len() {
-					rv.insert(tiles[i].1, i as u64);
+					rv.insert(tiles[i].1, i as i64);
 				}
 				rv
 			}(&self.tiles);
 		self.background_map = 
-			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, u64> {
-				let mut rv: HashMap<Entity, u64> = HashMap::<Entity, u64>::new();
+			|tiles: &[(Entity, Entity); Self::SIZE]| -> HashMap<Entity, i64> {
+				let mut rv: HashMap<Entity, i64> = HashMap::<Entity, i64>::new();
 				for i in 0..tiles.len() {
-					rv.insert(tiles[i].0, i as u64);
+					rv.insert(tiles[i].0, i as i64);
 				}
 				rv
 			}(&self.tiles);
@@ -504,10 +503,10 @@ fn replace_chunk(
 	for x in 0..=(Chunk::HEIGHT-1) {
 		for y in 0..=(Chunk::WIDTH-1) {
 			tile_change_queue.push(
-                                (tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1], true,
-					(pos, ChunkRelativePosition::new(x as u64, y as u64)).to_tile_absolute_position()
+				(tile_data[((x + (y * Chunk::WIDTH)) * 2) + 1], true,
+					(pos, ChunkRelativePosition::new(x as i64, y as i64)).to_tile_absolute_position()
 				)
-                        );
+			);
 		}
 	}
 }
@@ -1057,7 +1056,7 @@ fn init_chunks(
 		)
 	);
 
-	let chunk_data8: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
+	let chunk_data3x3: [[(Entity, Entity); Chunk::WIDTH]; Chunk::HEIGHT] =
 	core::array::from_fn( |_| -> [(Entity, Entity); Chunk::WIDTH] {
 	core::array::from_fn( |_| -> (Entity, Entity) {(
 		commands.spawn(tile_ids.make_bundle(TileIds::AIR)).id(),
@@ -1065,7 +1064,7 @@ fn init_chunks(
 	)})});
 	commands.spawn(
 		Chunk::new(
-			chunk_data8,
+			chunk_data3x3,
 			3, 3
 		)
 	);
